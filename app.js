@@ -224,6 +224,11 @@ function renderBot(curPrice){
     .sort((a,b)=>b.w-a.w)
     .map(r=>`<span class="bdChip"><i style="background:${r.w>=1.05?'#00e676':r.w<=0.95?'#ff5c7a':'#7d827d'}"></i>${r.name} <b>${r.w.toFixed(2)}</b>${r.acc!=null?` <small style="color:#7d827d">${r.acc}% right</small>`:''}</span>`).join('');
   const lessons=(st.lessons||[]).slice(-3).reverse().map(l=>`<div class="trd"><span>${new Date(l.ts).toLocaleDateString(undefined,{month:'short',day:'numeric'})}</span><b>${l.txt}</b></div>`).join('');
+  const activity=(st.activity||[]).slice(-20).reverse().map(a=>{
+    const col=a.kind==='win'?'#69f0ae':a.kind==='loss'?'#ff8a80':a.kind==='open'?'#7fb2e0':'#9aa09a';
+    const d=new Date(a.ts);
+    const ds=d.toLocaleDateString(undefined,{month:'short',day:'numeric'})+' '+d.toLocaleTimeString([],{hour:'2-digit',minute:'2-digit'});
+    return `<div class="trd"><span style="white-space:nowrap">${ds}</span><b style="color:${col};text-align:right;margin-left:10px">${a.txt}</b></div>`;}).join('');
 
   const showN=botJournalAll?tr.length:12;
   const jrows=tr.slice(-showN).reverse().map((t,k)=>{const id="bj"+k,c=t.ret>=0?"#00e676":"#ff1744";
@@ -263,9 +268,10 @@ function renderBot(curPrice){
       </div>
       <div class="ensBd"><div class="ensBdTitle">What it has learned — weight per signal <span class="ig" data-act="tip" data-tip="Cada senal gana peso cuando acierta y pierde peso cuando falla, con memoria reciente: lo de este mes pesa mas que lo del ano pasado.">ⓘ</span></div>
         <div class="ensBdRows">${wRows}</div>
-        ${st.pretrain?`<div class="ensBdNote">Pre-trained on ${st.pretrain.days} days of history (signal hit-rate ${st.pretrain.hitRate}%) before its first live call.</div>`:''}
+        ${st.pretrain?`<div class="ensBdNote">Pre-trained on ${st.pretrain.days} days of history (signal hit-rate ${st.pretrain.hitRate}%). Bot instance created <b>${new Date(st.createdAt||Date.now()).toLocaleDateString(undefined,{month:'short',day:'numeric'})}</b> — if this date looks new, this device is running a fresh bot (use 📥 Restore with a backup to bring your trained one).</div>`:''}
         ${studyHtml}
       </div>
+      ${activity?`<div class="trList"><div class="trListLbl">ACTIVITY · everything the bot did, with P&amp;L</div><div style="max-height:240px;overflow-y:auto">${activity}</div></div>`:''}
       ${lessons?`<div class="trList"><div class="trListLbl">RECENT LESSONS</div>${lessons}</div>`:''}
       ${jrows?`<div class="trList"><div class="trListLbl">BOT JOURNAL · ${tr.length} closed · ${winRate!=null?winRate+'% wins':''} · realized ${money(realized)}</div><div style="${botJournalAll?'max-height:360px;overflow-y:auto':''}">${jrows}</div>${tr.length>12?`<button class="bigBtn" style="width:100%;margin-top:7px" data-act="botjournal">${botJournalAll?'Show recent only':'Show ALL '+tr.length+' trades'}</button>`:''}</div>`:`<div class="paperEmpty">No closed trades yet — the journal fills in as the bot's calls play out.</div>`}
       <div class="paperBtns" style="flex-wrap:wrap"><button class="logBtn" data-act="botdeposit">💵 Add funds</button><button class="logBtn ghost" data-act="botwithdraw">Withdraw</button><button class="logBtn ghost" data-act="botbackup">🗂 Backup</button><button class="logBtn ghost" data-act="botrestore">📥 Restore</button><button class="logBtn ghost" data-act="botexport">⬇ CSV</button><button class="logBtn ghost" data-act="botreset">Reset</button></div>
@@ -532,18 +538,25 @@ document.addEventListener("click",async e=>{
     case "botdeposit": {if(!botState)break;
       const v=parseFloat(prompt("Amount to ADD to the paper account (USD):","5000"));
       if(!isFinite(v)||v<=0)break;
-      botState.netDeposits=(botState.netDeposits||0)+v;
-      botState.equity=+(botState.equity+v).toFixed(2);
-      botState.cashFlows=(botState.cashFlows||[]).concat([{ts:Date.now(),amt:v}]).slice(-50);
-      await botSave(botState);if(store[sel])render();break;}
+      await botQueue(async()=>{const stf=await botLoad();
+        stf.netDeposits=(stf.netDeposits||0)+v;
+        stf.equity=+(stf.equity+v).toFixed(2);
+        stf.cashFlows=(stf.cashFlows||[]).concat([{ts:Date.now(),amt:v}]).slice(-50);
+        botLog(stf,'info','Deposit: +$'+v.toLocaleString('en-US'));
+        await botSave(stf);botState=stf;});
+      if(store[sel])render();break;}
     case "botwithdraw": {if(!botState)break;
       const v=parseFloat(prompt("Amount to WITHDRAW from the paper account (USD):","1000"));
       if(!isFinite(v)||v<=0)break;
       if(botState.equity-v<100){alert("Leave at least $100 in the account so the bot can keep trading.");break;}
-      botState.netDeposits=(botState.netDeposits||0)-v;
-      botState.equity=+(botState.equity-v).toFixed(2);
-      botState.cashFlows=(botState.cashFlows||[]).concat([{ts:Date.now(),amt:-v}]).slice(-50);
-      await botSave(botState);if(store[sel])render();break;}
+      await botQueue(async()=>{const stf=await botLoad();
+        if(stf.equity-v<100)return;
+        stf.netDeposits=(stf.netDeposits||0)-v;
+        stf.equity=+(stf.equity-v).toFixed(2);
+        stf.cashFlows=(stf.cashFlows||[]).concat([{ts:Date.now(),amt:-v}]).slice(-50);
+        botLog(stf,'info','Withdrawal: −$'+v.toLocaleString('en-US'));
+        await botSave(stf);botState=stf;});
+      if(store[sel])render();break;}
     case "botbackup": {if(!botState)break;
       const blob=new Blob([JSON.stringify(botState,null,1)],{type:"application/json"});
       const a=document.createElement("a");a.href=URL.createObjectURL(blob);
@@ -566,7 +579,12 @@ document.addEventListener("click",async e=>{
 });
 
 function showErr(m){const e=$("#err");if(m){e.style.display="block";e.innerHTML="⚠ "+m;}else e.style.display="none";}
+let goBusy=false;
 async function go(){
+  if(goBusy)return; goBusy=true;
+  try{ await _go(); }finally{ goBusy=false; }
+}
+async function _go(){
   $("#refresh").classList.add("spin");showErr(null);
   if(!$("#content").innerHTML.trim()) $("#content").innerHTML='<div class="loadingBox">⏳ Loading live market data…</div>';
   try{

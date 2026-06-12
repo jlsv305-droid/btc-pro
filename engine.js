@@ -421,7 +421,7 @@ function botDefaultState(){
   const setups={}; BOT_SETUPS.forEach(x=>setups[x[0]]={hits:0,total:0,sumRet:0,mult:1});
   const weightsR={}; BOT_REGIMES.forEach(r=>weightsR[r]=botNeutralWeights());
   return {version:3,equity:BOT_START_EQUITY,startEquity:BOT_START_EQUITY,
-    netDeposits:0,cashFlows:[],
+    netDeposits:0,cashFlows:[],activity:[],createdAt:Date.now(),
     weightsR,learn,setups,params:Object.assign({},BOT_DEFAULT_PARAMS),
     trades:[],positions:[],pending:[],lastPx:{},news:null,study:null,
     lastRunDay:null,lastScan:null,pretrained:false,pretrain:null,
@@ -451,7 +451,22 @@ function botMigrate(st){
   /* additive fields (safe for any version) */
   st.netDeposits=st.netDeposits||0;
   st.cashFlows=st.cashFlows||[];
+  st.activity=st.activity||[];
+  st.createdAt=st.createdAt||(st.pretrain&&st.pretrain.when)||Date.now();
   return st;
+}
+/* append-only operational ledger: every open/close/fill/expiry/scan is recorded */
+function botLog(st,kind,txt){
+  st.activity=st.activity||[];
+  st.activity.push({ts:Date.now(),kind,txt});
+  if(st.activity.length>200)st.activity=st.activity.slice(-200);
+}
+/* serialize all bot operations — two flows can never clobber each other's state */
+let _botChain=Promise.resolve();
+function botQueue(fn){
+  const p=_botChain.then(fn,fn);
+  _botChain=p.then(()=>{},()=>{});
+  return p;
 }
 function botStorageGet(){
   return new Promise(res=>{
@@ -637,11 +652,15 @@ function botLearnFrom(st,votes,entry,exit,atrPctEntry,regime){
     st.lessons=st.lessons.slice(-12);
   }
 }
+const BOT_REASON_TXT={stop:'stop loss',trail:'trailing stop',target:'final target',time:'time limit','signal flip':'signal flip'};
 function botCloseTrade(st,pos,exit,exitT,reason){
   if(!pos)return null;
   const leg=p=>(pos.dir===1?(p-pos.entry)/pos.entry:(pos.entry-p)/pos.entry)*100;
   const ret=(pos.scaled?0.5*leg(pos.t1)+0.5*leg(exit):leg(exit))-BOT_COST;
+  const eqBefore=st.equity;
   st.equity=+(st.equity*(1+(ret/100)*(pos.sizePct/100))).toFixed(2);
+  const usd=+(st.equity-eqBefore).toFixed(2);
+  botLog(st,ret>0?'win':'loss',(pos.sym||'BTC')+' '+(pos.dir===1?'LONG':'SHORT')+' closed: '+(usd>=0?'+$':'−$')+Math.abs(usd).toFixed(2)+' ('+(ret>=0?'+':'')+ret.toFixed(1)+'%) — '+(BOT_REASON_TXT[reason]||reason));
   const tr={sym:pos.sym||'BTC',setup:pos.setup||'morning',regime:pos.regime||null,dir:pos.dir,
     entry:pos.entry,exit:+exit.toFixed(2),entryT:pos.entryT,exitT,ret:+ret.toFixed(2),
     sizePct:pos.sizePct,reason,date:pos.date,votes:pos.votes,atrPct:pos.atrPct,scaled:!!pos.scaled,eqAfter:st.equity};
@@ -717,7 +736,9 @@ function botMakePendings(st,sym,f,S,score,now){
 /* fill pending orders whose trigger was touched; drop expired ones */
 function botCheckPendings(st,sym,H,now){
   now=now||new Date();
-  st.pending=st.pending.filter(p=>p.sym!==sym||now.getTime()<=p.expires);
+  st.pending=st.pending.filter(p=>{
+    if(p.sym===sym&&now.getTime()>p.expires){botLog(st,'info',sym+' pending '+(p.type==='dip'?'dip-buy':'breakout')+' expired untouched');return false;}
+    return true;});
   for(const p of st.pending.filter(x=>x.sym===sym).slice()){
     let fillT=null;
     for(let i=0;i<H.c.length;i++){
@@ -734,10 +755,11 @@ function botCheckPendings(st,sym,H,now){
     st.positions.push({id:st.seq++,sym,dir:p.dir,entry:p.trigger,entryT:fillT,stop:p.stop,t1:p.t1,t2:p.t2,
       peak:p.trigger,scaled:false,sizePct:p.sizePct,votes:p.votes,atrPct:p.atrPct,regime:p.regime,trailATR:p.trailATR,
       date:botDayStr(new Date(fillT)),setup:p.type==='dip'?'dip':'brk',reasons:p.reasons});
+    botLog(st,'open',sym+' '+(p.dir===1?'LONG':'SHORT')+' opened at $'+Math.round(p.trigger).toLocaleString('en-US')+' · '+p.sizePct+'% ('+(p.type==='dip'?'dip-buy filled':'breakout filled')+')');
   }
 }
 /* Morning routine: per asset — exits, pendings, decision, entry, fresh pendings */
-async function botRunMorning(opts){
+async function _botRunMorning(opts){
   opts=opts||{};
   const now=opts.now||new Date();
   const st=await botLoad();
@@ -770,6 +792,9 @@ async function botRunMorning(opts){
           stop:d.stop,t1:d.t1,t2:d.t2,peak:f.price,scaled:false,sizePct:d.sizePct,
           votes:f.votes,atrPct:f.atrPct,regime:f.regime,trailATR:d.trailATR,date:today,setup:'morning',
           reasons:d.reasons.slice(0,4).map(r=>r.name+(r.v>0?' ▲':' ▼'))});
+        botLog(st,'open',sym+' '+d.action+' opened at $'+Math.round(f.price).toLocaleString('en-US')+' · '+d.sizePct+'% (morning signal)');
+      }else{
+        botLog(st,'info',sym+' '+d.action+' skipped — risk budget full');
       }
     }
     botMakePendings(st,sym,f,S,d.score,now);
@@ -779,11 +804,12 @@ async function botRunMorning(opts){
   }
   st.lastRunDay=today;
   st.lastScan={date:today,ranAt:Date.now(),late:now.getHours()>=9,byAsset};
+  botLog(st,'info','Scan '+today+': '+BOT_ASSETS.map(s=>byAsset[s]?s+' '+byAsset[s].action:s+' n/a').join(' · '));
   await botSave(st);
   return{state:st,scan:st.lastScan};
 }
 /* Hourly watcher: exits + pending fills + price refresh + stale-news refresh */
-async function botCheckExits(){
+async function _botCheckExits(){
   const st=await botLoad();
   const syms=Array.from(new Set(st.positions.map(p=>p.sym).concat(st.pending.map(p=>p.sym))));
   if(!st.news||Date.now()-st.news.at>3*3600000){try{const nw=await botFetchNews();if(nw)st.news=nw;}catch(e){}}
@@ -880,7 +906,7 @@ function botStudyParams(S,ser,weightsR,current){
   const adopted=!!(best&&best.val.score>valCur.score*1.1&&best.val.score>0);
   return{tested:combos.length,adopted,params:adopted?best.p:current,valBest:best?best.val:null,valCur};
 }
-async function botNightly(){
+async function _botNightly(){
   const st=await botLoad();
   try{
     const S=await loadDailyFor('BTC',2200);
@@ -907,7 +933,7 @@ async function botNightly(){
   return st;
 }
 /* Pre-training: regime weights from history + a first strategy study. */
-async function botPretrain(){
+async function _botPretrain(){
   const st=await botLoad();
   const S=await loadDailyFor('BTC',2200);
   const fng=await fetchSentiment(2000).catch(()=>null); // use full F&G history so the fng signal trains properly
@@ -948,3 +974,9 @@ function botSetBadge(st){
     chrome.action.setBadgeBackgroundColor({color:d&&d.action==='LONG'?'#00c853':d&&d.action==='SHORT'?'#ff1744':'#5a5f5a'});
   }catch(e){}
 }
+
+/* public entry points run through the queue so operations never overlap */
+function botRunMorning(opts){return botQueue(()=>_botRunMorning(opts));}
+function botCheckExits(){return botQueue(()=>_botCheckExits());}
+function botNightly(){return botQueue(()=>_botNightly());}
+function botPretrain(){return botQueue(()=>_botPretrain());}
