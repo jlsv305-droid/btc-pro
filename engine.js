@@ -421,6 +421,7 @@ function botDefaultState(){
   const setups={}; BOT_SETUPS.forEach(x=>setups[x[0]]={hits:0,total:0,sumRet:0,mult:1});
   const weightsR={}; BOT_REGIMES.forEach(r=>weightsR[r]=botNeutralWeights());
   return {version:3,equity:BOT_START_EQUITY,startEquity:BOT_START_EQUITY,
+    netDeposits:0,cashFlows:[],
     weightsR,learn,setups,params:Object.assign({},BOT_DEFAULT_PARAMS),
     trades:[],positions:[],pending:[],lastPx:{},news:null,study:null,
     lastRunDay:null,lastScan:null,pretrained:false,pretrain:null,
@@ -447,6 +448,9 @@ function botMigrate(st){
     st.news=st.news||null; st.study=st.study||null;
     BOT_SIGNALS.forEach(s=>{if(!st.learn[s.id])st.learn[s.id]={hits:0,total:0};});
   }
+  /* additive fields (safe for any version) */
+  st.netDeposits=st.netDeposits||0;
+  st.cashFlows=st.cashFlows||[];
   return st;
 }
 function botStorageGet(){

@@ -11,7 +11,7 @@ const sentColor=v=>v<25?"#ff1744":v<45?"#ff8a80":v<55?"#ffb300":v<75?"#69f0ae":"
 const LABELS=["12H","1D","3D","1W"];
 const ASSETS=[['BTC','bitcoin'],['ETH','ethereum']];
 let sel=1, store={}, sentiment=null, asset='BTC';
-let rangeKey='1Y', chartBig=false, botState=null, botBusy=false;
+let rangeKey='1Y', chartBig=false, botState=null, botBusy=false, botJournalAll=false;
 let chartHidden=(typeof window!=='undefined' && window.innerWidth<760);
 
 function ladderUp(p,levels,atr){let cands=[...levels];[1.5,3,4.5,6].forEach(m=>cands.push(p+m*atr));
@@ -151,7 +151,8 @@ function renderBot(curPrice){
   const tr=st.trades.map(t=>{const dollars=t.eqAfter-_pe;_pe=t.eqAfter;return Object.assign({},t,{dollars});});
   const wins=tr.filter(t=>t.ret>0).length;
   const winRate=tr.length?Math.round(wins/tr.length*100):null;
-  const realized=st.equity-startEq;
+  const netDep=st.netDeposits||0;
+  const realized=st.equity-startEq-netDep;
   const pxOf=sym=>(sym===asset&&curPrice)?curPrice:(st.lastPx&&st.lastPx[sym])||null;
   /* unrealized P&L across all open positions (banked halves included) */
   const positions=st.positions||[];
@@ -162,7 +163,7 @@ function renderBot(curPrice){
     return {o,pct,usd:st.equity*(pct/100)*(o.sizePct/100)};
   });
   const unreal=upnl.reduce((a,x)=>a+x.usd,0);
-  const totalPnl=realized+unreal, totalPct=totalPnl/startEq*100;
+  const totalPnl=realized+unreal, totalPct=totalPnl/(startEq+Math.max(0,netDep))*100;
   const gw=tr.filter(t=>t.dollars>0).reduce((a,t)=>a+t.dollars,0);
   const gl=Math.abs(tr.filter(t=>t.dollars<=0).reduce((a,t)=>a+t.dollars,0));
   const pf=tr.length?(gl>0?(gw/gl):(gw>0?Infinity:null)):null;
@@ -224,7 +225,8 @@ function renderBot(curPrice){
     .map(r=>`<span class="bdChip"><i style="background:${r.w>=1.05?'#00e676':r.w<=0.95?'#ff5c7a':'#7d827d'}"></i>${r.name} <b>${r.w.toFixed(2)}</b>${r.acc!=null?` <small style="color:#7d827d">${r.acc}% right</small>`:''}</span>`).join('');
   const lessons=(st.lessons||[]).slice(-3).reverse().map(l=>`<div class="trd"><span>${new Date(l.ts).toLocaleDateString(undefined,{month:'short',day:'numeric'})}</span><b>${l.txt}</b></div>`).join('');
 
-  const jrows=tr.slice(-12).reverse().map((t,k)=>{const id="bj"+k,c=t.ret>=0?"#00e676":"#ff1744";
+  const showN=botJournalAll?tr.length:12;
+  const jrows=tr.slice(-showN).reverse().map((t,k)=>{const id="bj"+k,c=t.ret>=0?"#00e676":"#ff1744";
     const setupName=(BOT_SETUPS.find(s=>s[0]===(t.setup||'morning'))||[0,'—'])[1];
     return `<div class="trade"><div class="trHead" data-act="tg" data-id="${id}">
       <span><b style="color:${t.dir===-1?'#ff7eb6':'#9ff0c4'}">${t.sym||'BTC'} ${t.dir===-1?'SHORT':'LONG'}</b> ${t.date} · ${t.sizePct}%</span><b style="color:${c}">${money(t.dollars)} <small style="font-weight:600">${t.ret>=0?'+':''}${t.ret.toFixed(1)}%</small></b></div>
@@ -236,7 +238,7 @@ function renderBot(curPrice){
   return `<div class="secTitle" style="color:#7fb2e0;font-size:10.5px">🤖 MORNING BOT · paper portfolio · regime-aware · self-tuning</div>
     <div class="paper" style="border:1.5px solid #2a5d8e;box-shadow:0 0 32px rgba(41,121,255,.10)">
       <div class="paperTop">
-        <div class="paperNow">P&amp;L: <b style="color:${pnlCol(totalPnl)}">${money(totalPnl)}</b> <small style="color:#7d827d">(${totalPct>=0?'+':''}${totalPct.toFixed(2)}%) · equity ${fmt(startEq+totalPnl)}${holdRet!=null?` · holding ${holdRet>=0?'+':''}${holdRet.toFixed(1)}%`:''}</small></div>
+        <div class="paperNow">P&amp;L: <b style="color:${pnlCol(totalPnl)}">${money(totalPnl)}</b> <small style="color:#7d827d">(${totalPct>=0?'+':''}${totalPct.toFixed(2)}%) · equity ${fmt(st.equity+unreal)}${holdRet!=null?` · holding ${holdRet>=0?'+':''}${holdRet.toFixed(1)}%`:''}</small></div>
         <button class="logBtn" data-act="botrun">${botBusy?'…':'▶ Scan now'}</button>
       </div>
       <canvas id="botEq" style="height:46px;margin-top:8px"></canvas>
@@ -246,6 +248,7 @@ function renderBot(curPrice){
         <div><span>Total P&amp;L</span><b style="color:${pnlCol(totalPnl)}">${money(totalPnl)} <small style="color:#7d827d">(${totalPct>=0?'+':''}${totalPct.toFixed(2)}%)</small></b></div>
         <div><span>Risk in use</span><b>${usedRisk.toFixed(1)}% <small style="color:#7d827d">of ${BOT_RISK_BUDGET}% budget</small></b></div>
         <div><span>Started with</span><b>${fmt(startEq)}${st.startDate?` <small style="color:#7d827d">${st.startDate}</small>`:''}</b></div>
+        ${netDep!==0?`<div><span>Net deposits/withdrawals</span><b>${money(netDep)}</b></div>`:''}
         ${tr.length?`<div><span>Profit factor</span><b>${pf===Infinity?'∞':pf!=null?pf.toFixed(2):'—'} <small style="color:#7d827d">won per $1 lost</small></b></div>
         <div><span>Best / worst trade</span><b><span style="color:#69f0ae">${money(best)}</span> / <span style="color:#ff8a80">${money(worst)}</span></b></div>`:''}
       </div>
@@ -264,8 +267,8 @@ function renderBot(curPrice){
         ${studyHtml}
       </div>
       ${lessons?`<div class="trList"><div class="trListLbl">RECENT LESSONS</div>${lessons}</div>`:''}
-      ${jrows?`<div class="trList"><div class="trListLbl">BOT JOURNAL · ${tr.length} closed · ${winRate!=null?winRate+'% wins':''}</div>${jrows}</div>`:`<div class="paperEmpty">No closed trades yet — the journal fills in as the bot's calls play out.</div>`}
-      <div class="paperBtns"><button class="logBtn ghost" data-act="botexport">⬇ Export CSV</button><button class="logBtn ghost" data-act="botreset">Reset &amp; re-learn</button></div>
+      ${jrows?`<div class="trList"><div class="trListLbl">BOT JOURNAL · ${tr.length} closed · ${winRate!=null?winRate+'% wins':''} · realized ${money(realized)}</div><div style="${botJournalAll?'max-height:360px;overflow-y:auto':''}">${jrows}</div>${tr.length>12?`<button class="bigBtn" style="width:100%;margin-top:7px" data-act="botjournal">${botJournalAll?'Show recent only':'Show ALL '+tr.length+' trades'}</button>`:''}</div>`:`<div class="paperEmpty">No closed trades yet — the journal fills in as the bot's calls play out.</div>`}
+      <div class="paperBtns" style="flex-wrap:wrap"><button class="logBtn" data-act="botdeposit">💵 Add funds</button><button class="logBtn ghost" data-act="botwithdraw">Withdraw</button><button class="logBtn ghost" data-act="botbackup">🗂 Backup</button><button class="logBtn ghost" data-act="botrestore">📥 Restore</button><button class="logBtn ghost" data-act="botexport">⬇ CSV</button><button class="logBtn ghost" data-act="botreset">Reset</button></div>
       <div class="paperNote">Paper trading only — it never places real orders. BTC + ETH; entries from the morning scan plus armed dip/breakout orders filled hourly. Per trade: stop 1.6×ATR, 50% off at T1, breakeven + 2×ATR trail to the final target (3.2×ATR), max 10 days, ~0.2% fee, risk ~1–2% of equity each, total open risk capped at ${BOT_RISK_BUDGET}%.</div>
     </div>`;
 }
@@ -275,7 +278,7 @@ function botStrip(){
   if(!botState)return '';
   const st=botState;
   const startEq=st.startEquity||10000;
-  const realized=st.equity-startEq;
+  const realized=st.equity-startEq-(st.netDeposits||0);
   let unreal=0;(st.positions||[]).forEach(o=>{
     const ref=(st.lastPx&&st.lastPx[o.sym])||o.entry;
     const leg=p=>(o.dir===1?(p-o.entry)/o.entry:(o.entry-p)/o.entry)*100;
@@ -525,6 +528,36 @@ document.addEventListener("click",async e=>{
       downloadCSV([["opened","closed","asset","setup","direction","size_pct","entry","exit","return_pct","pnl_usd","exit_reason","equity_after"]]
         .concat(botState.trades.map(t=>{const dl=(t.eqAfter-pe).toFixed(2);pe=t.eqAfter;
           return [t.date,new Date(t.exitT).toISOString().slice(0,10),t.sym||"BTC",t.setup||"morning",t.dir===1?"LONG":"SHORT",t.sizePct,t.entry,t.exit,t.ret,dl,t.reason,t.eqAfter];})),"morning-bot-journal.csv"); break;}
+    case "botjournal": {botJournalAll=!botJournalAll;if(store[sel])render();break;}
+    case "botdeposit": {if(!botState)break;
+      const v=parseFloat(prompt("Amount to ADD to the paper account (USD):","5000"));
+      if(!isFinite(v)||v<=0)break;
+      botState.netDeposits=(botState.netDeposits||0)+v;
+      botState.equity=+(botState.equity+v).toFixed(2);
+      botState.cashFlows=(botState.cashFlows||[]).concat([{ts:Date.now(),amt:v}]).slice(-50);
+      await botSave(botState);if(store[sel])render();break;}
+    case "botwithdraw": {if(!botState)break;
+      const v=parseFloat(prompt("Amount to WITHDRAW from the paper account (USD):","1000"));
+      if(!isFinite(v)||v<=0)break;
+      if(botState.equity-v<100){alert("Leave at least $100 in the account so the bot can keep trading.");break;}
+      botState.netDeposits=(botState.netDeposits||0)-v;
+      botState.equity=+(botState.equity-v).toFixed(2);
+      botState.cashFlows=(botState.cashFlows||[]).concat([{ts:Date.now(),amt:-v}]).slice(-50);
+      await botSave(botState);if(store[sel])render();break;}
+    case "botbackup": {if(!botState)break;
+      const blob=new Blob([JSON.stringify(botState,null,1)],{type:"application/json"});
+      const a=document.createElement("a");a.href=URL.createObjectURL(blob);
+      a.download="btc-pro-bot-backup-"+botDayStr(new Date())+".json";a.click();break;}
+    case "botrestore": {const inp=document.createElement("input");inp.type="file";inp.accept=".json,application/json";
+      inp.onchange=async()=>{const f=inp.files&&inp.files[0];if(!f)return;
+        try{
+          const obj=JSON.parse(await f.text());
+          if(!obj||obj.startEquity==null||(!obj.weightsR&&!obj.weights))throw 0;
+          if(typeof confirm==="function"&&!confirm("Replace the bot's current data with this backup?"))return;
+          await botSave(botMigrate(obj));botState=await botLoad();botSetBadge(botState);if(store[sel])render();
+          alert("Backup restored ✓");
+        }catch(e){alert("That file doesn't look like a valid BTC Pro backup.");}};
+      inp.click();break;}
     case "botreset": {if(typeof confirm==="function"&&!confirm("Reset the bot? This erases its paper record and re-learns from history."))break;
       botBusy=true;if(store[sel])render();
       try{await botSave(botDefaultState());botState=await botPretrain();botSetBadge(botState);}catch(err){botState=await botLoad();}
