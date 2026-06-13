@@ -502,7 +502,7 @@ function botNeedsRun(st,now){
    scored by a keyword lexicon: sentiment (bullish/bearish) and expected
    volatility impact (Fed, hacks, ETF decisions, lawsuits...). */
 const BOT_FEEDS=[
-  ['CoinDesk','https://www.coindesk.com/arc/outboundfeeds/rss/'],
+  ['CoinDesk','https://www.coindesk.com/arc/outboundfeeds/rss'],
   ['Cointelegraph','https://cointelegraph.com/rss'],
   ['Decrypt','https://decrypt.co/feed']
 ];
