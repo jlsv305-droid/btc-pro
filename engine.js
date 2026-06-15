@@ -552,7 +552,7 @@ function botNewsVote(news){if(!botNewsFresh(news))return 0;return news.sent>=0.2
 function botSeries(S,fngArr){
   const {h,l,c,v}=S,n=c.length;
   const sig=signalNormSeries(S);
-  const E50=ema(c,50),E200=sig.e200,MM=macdArr(c),HIST=MM.h;
+  const E20=ema(c,20),E50=ema(c,50),E200=sig.e200,MM=macdArr(c),HIST=MM.h;
   const R2=rsiArr(c,2),BB=boll(c),AT=atrArr(h,l,c);
   const atrPctArr=AT.map((a,i)=>a!=null?a/c[i]*100:null);
   const volBase=ema(atrPctArr.map(x=>x==null?0:x),100);
@@ -583,7 +583,20 @@ function botSeries(S,fngArr){
     const bull=price>=E200[i];
     const volHi=(atrPctArr[i]!=null&&volBase[i]!=null&&volBase[i]>0)?atrPctArr[i]>1.25*volBase[i]:false;
     const regime=(bull?'bull':'bear')+(volHi?'Vol':'Calm');
-    return {votes,atrPct:AT[i]/price*100,price,t:S.t[i],regime};
+    /* near-term trend (the recent tape): the bot must not fight a strong
+       multi-day move just because the slow 200-day frame disagrees. +1 up,
+       -1 down, 0 mixed. Two ways to qualify: price on one side of the 20-day
+       EMA with the EMA sloping that way, OR a sharp 7-day move (>3× daily ATR)
+       that the lagging average hasn't caught up to yet. */
+    let nearTrend=0;
+    if(E20[i]!=null&&E20[i-5]!=null){
+      const ret7=i>=7?(price/c[i-7]-1)*100:0;
+      const sharp=Math.abs(ret7)>3*Math.max(AT[i]/price*100,0.8);
+      const up=price>E20[i]&&(E20[i]>E20[i-5]||(sharp&&ret7>0));
+      const dn=price<E20[i]&&(E20[i]<E20[i-5]||(sharp&&ret7<0));
+      if(up&&!dn)nearTrend=1; else if(dn&&!up)nearTrend=-1;
+    }
+    return {votes,atrPct:AT[i]/price*100,price,t:S.t[i],regime,nearTrend};
   };
   return {votesAt,n,atr:AT};
 }
@@ -752,6 +765,9 @@ function botCheckPendings(st,sym,H,now){
     const risk=(p.sizePct/100)*(Math.abs(p.trigger-p.stop)/p.trigger*100);
     if(botUsedRisk(st)+risk>BOT_RISK_BUDGET+0.01)continue;
     if(botSetupMult(st,p.type==='dip'?'dip':'brk')<=0)continue;
+    const refP=last(H.c); // no pyramiding: skip if it would add to a same-direction loser
+    if(st.positions.some(q=>q.sym===sym&&q.dir===p.dir&&((q.dir===1&&refP<q.entry)||(q.dir===-1&&refP>q.entry)))){
+      botLog(st,'info',sym+' pending '+(p.type==='dip'?'dip-buy':'breakout')+' cancelled — would add to a losing position');continue;}
     st.positions.push({id:st.seq++,sym,dir:p.dir,entry:p.trigger,entryT:fillT,stop:p.stop,t1:p.t1,t2:p.t2,
       peak:p.trigger,scaled:false,sizePct:p.sizePct,votes:p.votes,atrPct:p.atrPct,regime:p.regime,trailATR:p.trailATR,
       date:botDayStr(new Date(fillT)),setup:p.type==='dip'?'dip':'brk',reasons:p.reasons});
@@ -785,10 +801,18 @@ async function _botRunMorning(opts){
       if(opp)botCloseTrade(st,pos,f.price,f.t,'signal flip');
     }
     const hasMorning=st.positions.some(p=>p.sym===sym&&p.setup==='morning');
+    const dir=d.action==='LONG'?1:-1;
+    const fightsTrend=d.action!=='FLAT'&&f.nearTrend!==0&&f.nearTrend!==dir; // entry opposes the recent tape
+    const sameDirUnderwater=st.positions.some(p=>p.sym===sym&&p.dir===dir&&
+      ((p.dir===1&&f.price<p.entry)||(p.dir===-1&&f.price>p.entry))); // would pyramid into a loser
     if(!hasMorning&&d.action!=='FLAT'&&d.sizePct>0){
       const risk=(d.sizePct/100)*(Math.abs(f.price-d.stop)/f.price*100);
-      if(botUsedRisk(st)+risk<=BOT_RISK_BUDGET+0.01){
-        st.positions.push({id:st.seq++,sym,dir:d.action==='LONG'?1:-1,entry:f.price,entryT:f.t,
+      if(fightsTrend){
+        botLog(st,'info',sym+' '+d.action+' skipped — fights the '+(f.nearTrend>0?'up':'down')+'trend of the last 2 weeks');
+      }else if(sameDirUnderwater){
+        botLog(st,'info',sym+' '+d.action+' skipped — would add to a losing '+d.action+' (no pyramiding)');
+      }else if(botUsedRisk(st)+risk<=BOT_RISK_BUDGET+0.01){
+        st.positions.push({id:st.seq++,sym,dir,entry:f.price,entryT:f.t,
           stop:d.stop,t1:d.t1,t2:d.t2,peak:f.price,scaled:false,sizePct:d.sizePct,
           votes:f.votes,atrPct:f.atrPct,regime:f.regime,trailATR:d.trailATR,date:today,setup:'morning',
           reasons:d.reasons.slice(0,4).map(r=>r.name+(r.v>0?' ▲':' ▼'))});
@@ -797,7 +821,7 @@ async function _botRunMorning(opts){
         botLog(st,'info',sym+' '+d.action+' skipped — risk budget full');
       }
     }
-    botMakePendings(st,sym,f,S,d.score,now);
+    if(!fightsTrend)botMakePendings(st,sym,f,S,d.score,now); // don't arm orders against the recent tape
     byAsset[sym]={action:d.action,score:+d.score.toFixed(3),conf:+d.conf.toFixed(2),sizePct:d.sizePct,
       riskPct:d.riskPct,price:f.price,brake:d.brake,newsBrake:d.newsBrake,regime:f.regime,atrPct:+f.atrPct.toFixed(2),
       reasons:d.reasons.slice(0,5).map(r=>({name:r.name,v:r.v,w:+r.w.toFixed(2)}))};
