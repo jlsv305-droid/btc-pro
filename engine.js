@@ -951,6 +951,7 @@ async function _botNightly(){
       st.lessons.push({ts:Date.now(),txt:'Nightly study: adopted new tuning (entry '+st.params.th+', stop '+st.params.stopATR+'×ATR, target '+st.params.t2ATR+'×ATR, trail '+st.params.trailATR+'×ATR) — better risk-adjusted out-of-sample'});
       st.lessons=st.lessons.slice(-12);
     }
+    botLog(st,'info','Nightly: tested '+study.tested+' variants — '+(study.adopted?'adopted new tuning (th='+st.params.th+' stop='+st.params.stopATR+'×ATR)':'kept current tuning (th='+st.params.th+' stop='+st.params.stopATR+'×ATR)'));
     try{const nw=await botFetchNews();if(nw)st.news=nw;}catch(e){}
     await botSave(st);
   }catch(e){}
