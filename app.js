@@ -608,10 +608,24 @@ document.addEventListener("click",async e=>{
       const leg=(pos.dir===1?(px-pos.entry)/pos.entry:(pos.entry-px)/pos.entry)*100;
       const pnlPct=pos.scaled?0.5*((pos.dir===1?(pos.t1-pos.entry)/pos.entry:(pos.entry-pos.t1)/pos.entry)*100)+0.5*leg:leg;
       const usd=botState.equity*(pnlPct/100)*(pos.sizePct/100);
+      // second opinion: what does the bot think about this symbol right now?
+      let botAction='FLAT',botScore=null;
+      if(pos.sym===asset&&store[1]){const v=botView(store[1],botState,botState.news);if(v){botAction=v.action;botScore=v.score;}}
+      else if(botState.lastScan&&botState.lastScan.byAsset&&botState.lastScan.byAsset[pos.sym]){
+        const a=botState.lastScan.byAsset[pos.sym];botAction=a.action;botScore=a.score;}
+      const sameAsPos=(pos.dir===1&&botAction==='LONG')||(pos.dir===-1&&botAction==='SHORT');
+      const oppToPos=(pos.dir===1&&botAction==='SHORT')||(pos.dir===-1&&botAction==='LONG');
+      let verdict;
+      if(botAction==='FLAT')verdict='➖ The bot is NEUTRAL on '+pos.sym+' now — no strong view either way.';
+      else if(sameAsPos)verdict='⚠️ WARNING: the bot is still leaning '+botAction+' (score '+botScore+') — it would KEEP this trade open. Closing now goes AGAINST its analysis.';
+      else if(oppToPos)verdict='✅ The bot has turned '+botAction+' (score '+botScore+') — closing is IN LINE with its current view.';
+      else verdict='➖ The bot has no strong view here right now.';
+      const protNote=pos.scaled?'\n🛡️ This trade is already protected — stop at breakeven + trailing. You can let it run with no risk of a loss.':'';
       const m=pos.sym+' '+(pos.dir===1?'LONG':'SHORT')+' at $'+Math.round(px).toLocaleString('en-US')+
         '\n\nClosing now locks in '+(usd>=0?'+$':'−$')+Math.abs(usd).toLocaleString('en-US',{maximumFractionDigits:2})+
         ' ('+(pnlPct>=0?'+':'')+pnlPct.toFixed(1)+'%).'+
-        '\n\nClose this paper trade now?';
+        '\n\n'+verdict+protNote+
+        '\n\nThis is PAPER trading. Close this trade now?';
       if(typeof confirm==='function'&&!confirm(m))break;
       await botQueue(async()=>{const stf=await botLoad();
         const p=(stf.positions||[]).find(q=>q.id===id);
