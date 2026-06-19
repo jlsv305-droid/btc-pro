@@ -676,7 +676,8 @@ function botCloseTrade(st,pos,exit,exitT,reason){
   botLog(st,ret>0?'win':'loss',(pos.sym||'BTC')+' '+(pos.dir===1?'LONG':'SHORT')+' closed: '+(usd>=0?'+$':'−$')+Math.abs(usd).toFixed(2)+' ('+(ret>=0?'+':'')+ret.toFixed(1)+'%) — '+(BOT_REASON_TXT[reason]||reason));
   const tr={sym:pos.sym||'BTC',setup:pos.setup||'morning',regime:pos.regime||null,dir:pos.dir,
     entry:pos.entry,exit:+exit.toFixed(2),entryT:pos.entryT,exitT,ret:+ret.toFixed(2),
-    sizePct:pos.sizePct,reason,date:pos.date,votes:pos.votes,atrPct:pos.atrPct,scaled:!!pos.scaled,eqAfter:st.equity};
+    sizePct:pos.sizePct,reason,date:pos.date,votes:pos.votes,atrPct:pos.atrPct,scaled:!!pos.scaled,
+    usd:usd,eqAfter:st.equity};
   st.trades.push(tr);st.trades=st.trades.slice(-400);
   const exitBlend=pos.scaled?0.5*(pos.t1+exit):exit;
   botLearnFrom(st,pos.votes,pos.entry,exitBlend,pos.atrPct,pos.regime);

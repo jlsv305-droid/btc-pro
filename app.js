@@ -147,8 +147,11 @@ function renderBot(curPrice){
   const nr=botNextRun(new Date());
   const nrTxt=nr.toLocaleDateString(undefined,{weekday:'short',month:'short',day:'numeric'})+' '+nr.toLocaleTimeString([],{hour:'2-digit',minute:'2-digit'});
   const startEq=st.startEquity||10000;
-  let _pe=startEq;
-  const tr=st.trades.map(t=>{const dollars=t.eqAfter-_pe;_pe=t.eqAfter;return Object.assign({},t,{dollars});});
+  // per-trade $ P&L = the equity change caused by THE TRADE only (excludes deposits).
+  // stored as t.usd going forward; reconstructed from ret×size for older trades.
+  const tradeUsd=t=>{if(t.usd!=null)return t.usd;
+    const r=(t.ret/100)*(t.sizePct/100);return r<=-1?0:+(t.eqAfter*r/(1+r)).toFixed(2);};
+  const tr=st.trades.map(t=>Object.assign({},t,{dollars:tradeUsd(t)}));
   const wins=tr.filter(t=>t.ret>0).length;
   const winRate=tr.length?Math.round(wins/tr.length*100):null;
   const netDep=st.netDeposits||0;
@@ -280,13 +283,14 @@ function renderBot(curPrice){
 }
 
 /* compact always-visible bot status strip shown at the very top of the page */
-function botStrip(){
+function botStrip(livePx){
   if(!botState)return '';
   const st=botState;
   const startEq=st.startEquity||10000;
   const realized=st.equity-startEq-(st.netDeposits||0);
   let unreal=0;(st.positions||[]).forEach(o=>{
-    const ref=(st.lastPx&&st.lastPx[o.sym])||o.entry;
+    // use the live price for the asset on screen (same as the card); stored price otherwise
+    const ref=(livePx&&livePx[o.sym]!=null?livePx[o.sym]:(st.lastPx&&st.lastPx[o.sym]))||o.entry;
     const leg=p=>(o.dir===1?(p-o.entry)/o.entry:(o.entry-p)/o.entry)*100;
     const pct=o.scaled?0.5*leg(o.t1)+0.5*leg(ref):leg(ref);
     unreal+=st.equity*(pct/100)*(o.sizePct/100);});
@@ -437,7 +441,7 @@ function render(){
     return `<div class="secTitle">${g.toUpperCase()}</div><div class="grid">${items}</div>`;}).join("");
 
   $("#content").innerHTML=`
-    ${botStrip()}
+    ${botStrip({[asset]:cur.price})}
     ${chartHidden?`<div class="chartCard collapsed">
       <div class="chartTitle"><span>${asset} price chart</span><button class="bigBtn" data-act="togglechart">📈 Show chart</button></div></div>`:`<div class="chartCard">
       <div class="chartTitle"><span>${asset} · price &amp; trend flips · showing ${spanLabel}</span><span style="display:flex;gap:6px"><button class="bigBtn" data-act="togglechart">Hide</button><button class="bigBtn" id="bigBtn" data-act="bigchart">${chartBig?'✕ Close':'⛶ Expand'}</button></span></div>
@@ -530,10 +534,10 @@ document.addEventListener("click",async e=>{
       try{const r=await botRunMorning({force:true});botState=r.state||await botLoad();botSetBadge(botState);}catch(err){}
       botBusy=false;if(store[sel])render(); break;}
     case "botexport": {if(!botState||!botState.trades.length)break;
-      let pe=botState.startEquity||10000;
+      const dol=t=>{if(t.usd!=null)return t.usd;const r=(t.ret/100)*(t.sizePct/100);return r<=-1?0:+(t.eqAfter*r/(1+r)).toFixed(2);};
       downloadCSV([["opened","closed","asset","setup","direction","size_pct","entry","exit","return_pct","pnl_usd","exit_reason","equity_after"]]
-        .concat(botState.trades.map(t=>{const dl=(t.eqAfter-pe).toFixed(2);pe=t.eqAfter;
-          return [t.date,new Date(t.exitT).toISOString().slice(0,10),t.sym||"BTC",t.setup||"morning",t.dir===1?"LONG":"SHORT",t.sizePct,t.entry,t.exit,t.ret,dl,t.reason,t.eqAfter];})),"morning-bot-journal.csv"); break;}
+        .concat(botState.trades.map(t=>
+          [t.date,new Date(t.exitT).toISOString().slice(0,10),t.sym||"BTC",t.setup||"morning",t.dir===1?"LONG":"SHORT",t.sizePct,t.entry,t.exit,t.ret,dol(t),t.reason,t.eqAfter])),"morning-bot-journal.csv"); break;}
     case "botjournal": {botJournalAll=!botJournalAll;if(store[sel])render();break;}
     case "botdeposit": {if(!botState)break;
       const v=parseFloat(prompt("Amount to ADD to the paper account (USD):","5000"));
