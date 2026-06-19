@@ -799,7 +799,7 @@ async function _botRunMorning(opts){
     const d=botDecide(f,st,'morning');
     for(const pos of st.positions.filter(p=>p.sym===sym).slice()){
       const opp=(pos.dir===1&&d.action==='SHORT')||(pos.dir===-1&&d.action==='LONG');
-      if(opp)botCloseTrade(st,pos,f.price,f.t,'signal flip');
+      if(opp&&pos.setup!=='manual')botCloseTrade(st,pos,f.price,f.t,'signal flip'); // your manual trades live by their own stop/target, not the bot's opinion
     }
     const hasMorning=st.positions.some(p=>p.sym===sym&&p.setup==='morning');
     const dir=d.action==='LONG'?1:-1;
@@ -990,6 +990,58 @@ async function botEnsureReady(){
   if(!st.pretrained){try{st=await botPretrain();}catch(e){await botSave(st);}}
   return st;
 }
+/* The bot's directional read for a symbol RIGHT NOW — used for the manual
+   buy/sell "second opinion" warning. UI-free. */
+function botView(dailyS,st,news){
+  if(!dailyS||!dailyS.c||dailyS.c.length<211)return null;
+  const ser=botSeries(dailyS,null);
+  const f=ser.votesAt(dailyS.c.length-1);
+  if(!f)return null;
+  f.votes.news=botNewsVote(news||(st&&st.news));
+  const d=botDecide(f,st,'manual');
+  return {action:d.action,score:+d.score.toFixed(3),conf:+d.conf.toFixed(2),
+    nearTrend:f.nearTrend,regime:f.regime,price:f.price,atrPct:f.atrPct,f,d};
+}
+/* Open a MANUAL paper trade (you, not the bot). Same risk-managed structure:
+   stop & first target 1.6×ATR, final target, breakeven+trail; risk ~1.5% of
+   equity; managed by the same hourly exit watcher. */
+function botOpenManual(st,sym,dir,price,view){
+  const p=st.params||BOT_DEFAULT_PARAMS;
+  const atrPct=view&&view.atrPct?view.atrPct:2;
+  const atrAbs=price*atrPct/100;
+  const stopDist=p.stopATR*Math.max(atrPct,0.5);
+  const sizePct=Math.round(Math.max(5,Math.min(100,1.5/stopDist*100)));
+  const stop=price-dir*p.stopATR*atrAbs, t1=price+dir*p.stopATR*atrAbs, t2=price+dir*p.t2ATR*atrAbs;
+  st.positions.push({id:st.seq++,sym,dir,entry:price,entryT:Date.now(),stop,t1,t2,peak:price,scaled:false,
+    sizePct,votes:(view&&view.f?view.f.votes:{}),atrPct,regime:(view?view.regime:null),trailATR:p.trailATR,
+    date:botDayStr(new Date()),setup:'manual',reasons:['manual '+(dir===1?'buy':'sell')+' — you']});
+  botLog(st,'open',sym+' '+(dir===1?'LONG':'SHORT')+' opened at $'+Math.round(price).toLocaleString('en-US')+' · '+sizePct+'% (MANUAL — you)');
+  return sizePct;
+}
+
+/* ===================== MINER BREAK-EVEN ESTIMATE =====================
+   Rough "production cost" floor from live network hashrate (mempool.space,
+   CORS-open, no key). Electricity-only break-even per BTC at a few power
+   prices. It's an ESTIMATE — sensitive to miner efficiency and $/kWh. */
+const MINER_EFF_JTH=25;        // network-avg miner efficiency, Joules per TH
+const MINER_SUBSIDY=3.125;     // BTC per block after the 2024 halving
+async function fetchMinerCost(){
+  try{
+    const r=await fetch("https://mempool.space/api/v1/mining/hashrate/3d");
+    if(!r.ok)return null;
+    const j=await r.json();
+    const hps=j.currentHashrate; if(!hps||!isFinite(hps))return null;
+    const ths=hps/1e12;                          // hashes/s -> TH/s
+    const powerW=ths*MINER_EFF_JTH;              // J/s = W
+    const kWhDay=powerW*24/1000;
+    const btcDay=144*MINER_SUBSIDY;
+    const perBTC=el=>Math.round(kWhDay*el/btcDay);
+    return {at:Date.now(),hashrateEH:+(hps/1e18).toFixed(0),
+      low:perBTC(0.04),mid:perBTC(0.05),high:perBTC(0.06),
+      eff:MINER_EFF_JTH,subsidy:MINER_SUBSIDY};
+  }catch(e){return null;}
+}
+
 function botSetBadge(st){
   try{
     if(typeof chrome==='undefined'||!chrome.action||!chrome.action.setBadgeText)return;

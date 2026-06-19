@@ -10,7 +10,7 @@ const fmtRange=(a,b)=>fmt(Math.min(a,b))+" – "+fmt(Math.max(a,b));
 const sentColor=v=>v<25?"#ff1744":v<45?"#ff8a80":v<55?"#ffb300":v<75?"#69f0ae":"#00e676";
 const LABELS=["12H","1D","3D","1W"];
 const ASSETS=[['BTC','bitcoin'],['ETH','ethereum']];
-let sel=1, store={}, sentiment=null, asset='BTC';
+let sel=1, store={}, sentiment=null, asset='BTC', minerCost=null;
 let rangeKey='1Y', chartBig=false, botState=null, botBusy=false, botJournalAll=false;
 let chartHidden=(typeof window!=='undefined' && window.innerWidth<760);
 
@@ -277,6 +277,8 @@ function renderBot(curPrice){
       ${activity?`<div class="trList"><div class="trListLbl">ACTIVITY · everything the bot did, with P&amp;L</div><div style="max-height:240px;overflow-y:auto">${activity}</div></div>`:''}
       ${lessons?`<div class="trList"><div class="trListLbl">RECENT LESSONS</div>${lessons}</div>`:''}
       ${jrows?`<div class="trList"><div class="trListLbl">BOT JOURNAL · ${tr.length} closed · ${winRate!=null?winRate+'% wins':''} · realized ${money(realized)}</div><div style="${botJournalAll?'max-height:360px;overflow-y:auto':''}">${jrows}</div>${tr.length>12?`<button class="bigBtn" style="width:100%;margin-top:7px" data-act="botjournal">${botJournalAll?'Show recent only':'Show ALL '+tr.length+' trades'}</button>`:''}</div>`:`<div class="paperEmpty">No closed trades yet — the journal fills in as the bot's calls play out.</div>`}
+      <div class="paperBtns" style="margin-bottom:2px"><button class="logBtn" data-act="botbuy" style="flex:1;background:#00c853;color:#04140b">🟢 Buy (long)</button><button class="logBtn" data-act="botsell" style="flex:1;background:#ff1744;color:#fff">🔴 Sell (short)</button></div>
+      <div class="paperNote" style="margin-top:0;padding-top:0;border:none">You can place your own paper trade — the bot checks it against its analysis first and warns you if you’re going against it.</div>
       <div class="paperBtns" style="flex-wrap:wrap"><button class="logBtn" data-act="botdeposit">💵 Add funds</button><button class="logBtn ghost" data-act="botwithdraw">Withdraw</button><button class="logBtn ghost" data-act="botbackup">🗂 Backup</button><button class="logBtn ghost" data-act="botrestore">📥 Restore</button><button class="logBtn ghost" data-act="botexport">⬇ CSV</button><button class="logBtn ghost" data-act="botreset">Reset</button></div>
       <div class="paperNote">Paper trading only — it never places real orders. BTC + ETH; entries from the morning scan plus armed dip/breakout orders filled hourly. Per trade: stop 1.6×ATR, 50% off at T1, breakeven + 2×ATR trail to the final target (3.2×ATR), max 10 days, ~0.2% fee, risk ~1–2% of equity each, total open risk capped at ${BOT_RISK_BUDGET}%.</div>
     </div>`;
@@ -408,6 +410,20 @@ function render(){
       ${bnc&&bnc.isDrop&&bnc.prob!=null?`<div class="bounceLine">📉 Down <b>${Math.abs(bnc.cur).toFixed(1)}%</b> this week. After similar weekly drops, ${asset} rose the next week <b style="color:${bnc.prob>=50?'#00e676':'#ff8a80'}">${Math.round(bnc.prob)}%</b> of the time (avg <b style="color:${bnc.avg>=0?'#69f0ae':'#ff8a80'}">${bnc.avg>=0?'+':''}${bnc.avg.toFixed(1)}%</b> · ${bnc.n} cases). <span class="ig" data-act="tip" data-tip="De las semanas que cayeron asi o mas, cuantas subieron la semana siguiente. Estadistica historica, no garantia.">ⓘ</span></div>`:(bnc&&!bnc.isDrop?`<div class="bounceLine sub">No weekly drop right now (${bnc.cur>=0?'+':''}${bnc.cur.toFixed(1)}% this week). The bounce stat appears after a drop.</div>`:'')}
     </div>` : '';
 
+  let minerHtml='';
+  if(asset==='BTC'&&minerCost){
+    const mc=minerCost, p=cur.price;
+    const inZone=p<=mc.high, below=p<mc.mid;
+    const col=p<mc.low?'#00e676':p<mc.high?'#ffb300':'#69f0ae';
+    const pctMid=((p/mc.mid-1)*100);
+    minerHtml=`<div class="secTitle">MINER BREAK-EVEN · BTC</div>
+    <div class="valCard">
+      <div class="valTop"><span style="color:${col}">≈ ${fmt(mc.low)} – ${fmt(mc.high)}</span> <small style="color:#7d827d;font-weight:400">est. cost to mine 1 BTC</small></div>
+      <div class="valNote">Price now is <b style="color:${col}">${pctMid>=0?'+':''}${Math.round(pctMid)}%</b> ${pctMid>=0?'above':'below'} the central estimate (≈ ${fmt(mc.mid)}). ${below?'<b style="color:#ffb300">Near/below miner cost</b> — historically a strong floor (miners stop selling).':'Comfortably above miner cost.'} <span class="ig" data-act="tip" data-tip="Estimación del costo de ELECTRICIDAD para producir 1 BTC, según el hashrate real de la red (mempool.space) a 0.04–0.06 \$/kWh y eficiencia ~25 J/TH. Es una ESTIMACIÓN, no un dato exacto; el costo total (con máquinas) es mayor. Cuando el precio cae cerca de esta zona los mineros dejan de vender y suele actuar como piso.">ⓘ</span></div>
+      <div class="btFoot">Network hashrate ${mc.hashrateEH} EH/s · electricity-only · assumes ~25 J/TH. Updated ${new Date(mc.at).toLocaleDateString(undefined,{month:'short',day:'numeric'})}.</div>
+    </div>`;
+  }
+
   const botHtml=renderBot(cur.price);
 
   const log=loadLog();
@@ -467,6 +483,8 @@ function render(){
       <div class="sec">${kzHtml}</div>
 
       <div class="sec">${valHtml}</div>
+
+      ${minerHtml?`<div class="sec">${minerHtml}</div>`:''}
 
       <div class="sec">${paperHtml}</div>
 
@@ -579,6 +597,37 @@ document.addEventListener("click",async e=>{
       botBusy=true;if(store[sel])render();
       try{await botSave(botDefaultState());botState=await botPretrain();botSetBadge(botState);}catch(err){botState=await botLoad();}
       botBusy=false;if(store[sel])render(); break;}
+    case "botbuy": case "botsell": {
+      if(!botState||!store[1])break;
+      const dir=el.dataset.act==='botbuy'?1:-1, price=store[1].c[store[1].c.length-1];
+      const view=botView(store[1],botState,botState.news);
+      if(!view){alert("Not enough data to open a trade yet.");break;}
+      // size preview (matches botOpenManual)
+      const sd=(botState.params||{stopATR:1.6}).stopATR*Math.max(view.atrPct,0.5);
+      const sizePct=Math.round(Math.max(5,Math.min(100,1.5/sd*100)));
+      const usedR=botUsedRisk(botState);
+      const aligned=(dir===1&&view.action==='LONG')||(dir===-1&&view.action==='SHORT');
+      const against=(dir===1&&view.action==='SHORT')||(dir===-1&&view.action==='LONG');
+      const fights=view.nearTrend!==0&&view.nearTrend!==dir;
+      const yourMove=dir===1?'BUY (go LONG — bet it goes UP)':'SELL (go SHORT — bet it goes DOWN)';
+      const botSays=view.action==='FLAT'?'NEUTRAL (no clear edge)':view.action+' (score '+view.score+')';
+      let verdict;
+      if(view.action==='FLAT') verdict='➖ The bot is NEUTRAL right now — it sees no clear edge either way.';
+      else if(aligned) verdict='✅ This AGREES with the bot — you’re on the same side.';
+      else if(against) verdict='⚠️ WARNING: this goes AGAINST the bot. It is leaning '+view.action+' right now.';
+      else verdict='➖ The bot has no strong opinion on this direction.';
+      const trendNote=fights?'\n⚠️ It also fights the recent '+(view.nearTrend>0?'UP':'DOWN')+'trend of the last 2 weeks.':'';
+      const atrAbs=price*view.atrPct/100, st=price-dir*1.6*atrAbs, tg=price+dir*3.2*atrAbs;
+      const msg=asset+' — '+yourMove+' at $'+Math.round(price).toLocaleString('en-US')+
+        '\n\nThe bot says: '+botSays+'\n'+verdict+trendNote+
+        '\n\nPlan (paper): size '+sizePct+'% of capital · stop $'+Math.round(st).toLocaleString('en-US')+
+        ' · target $'+Math.round(tg).toLocaleString('en-US')+' · risk ~1.5% of capital.'+
+        '\nOpen risk in use: '+usedR.toFixed(1)+'% of 6% budget.'+
+        '\n\nThis is PAPER trading — no real money. Open this trade?';
+      if(typeof confirm==='function'&&!confirm(msg))break;
+      await botQueue(async()=>{const stf=await botLoad();
+        botOpenManual(stf,asset,dir,price,view);await botSave(stf);botState=stf;botSetBadge(stf);});
+      if(store[sel])render(); break;}
   }
 });
 
@@ -594,6 +643,7 @@ async function _go(){
   try{
     store=await loadStoreFor(asset);
     sentiment=await fetchSentiment(30);
+    if(!minerCost||Date.now()-minerCost.at>6*3600000){try{const mc=await fetchMinerCost();if(mc)minerCost=mc;}catch(e){}}
     if(!botState)botState=await botEnsureReady();           // first ever open: pre-trains on history
     if(botNeedsRun(botState)){                              // morning catch-up if the alarm was missed
       try{const r=await botRunMorning({});if(r.state)botState=r.state;}catch(e){}
