@@ -198,6 +198,7 @@ function renderBot(curPrice){
                   :`<div><span>Target 1 (take 50%)</span><b style="color:#69f0ae">${fmt(o.t1)}</b></div>
         <div><span>Final target</span><b style="color:#69f0ae">${fmt(o.t2)}</b></div>`}
       </div>
+      <button class="logBtn ghost" data-act="botclose" data-id="${o.id}" style="width:100%;margin-top:9px">✕ Close this trade now</button>
     </div>`;}).join('');
 
   /* pending (armed) orders */
@@ -240,7 +241,7 @@ function renderBot(curPrice){
       <span><b style="color:${t.dir===-1?'#ff7eb6':'#9ff0c4'}">${t.sym||'BTC'} ${t.dir===-1?'SHORT':'LONG'}</b> ${t.date} · ${t.sizePct}%</span><b style="color:${c}">${money(t.dollars)} <small style="font-weight:600">${t.ret>=0?'+':''}${t.ret.toFixed(1)}%</small></b></div>
       <div id="${id}" class="trDet"><div class="trd"><span>Setup</span><b>${setupName}</b></div>
         <div class="trd"><span>Entry → Exit</span><b>${fmt(t.entry)} → ${fmt(t.exit)}${t.scaled?' <small style="color:#69f0ae">(50% banked at T1)</small>':''}</b></div>
-        <div class="trd"><span>Closed</span><b>${fmtD(t.exitT)} · ${t.reason==='stop'?'stop loss':t.reason==='trail'?'trailing stop':t.reason==='target'?'final target':t.reason==='time'?'time limit':'signal flip'}</b></div>
+        <div class="trd"><span>Closed</span><b>${fmtD(t.exitT)} · ${t.reason==='stop'?'stop loss':t.reason==='trail'?'trailing stop':t.reason==='target'?'final target':t.reason==='time'?'time limit':t.reason==='manual'?'closed by you':'signal flip'}</b></div>
         <div class="trd"><span>Equity after</span><b>${fmt(t.eqAfter)}</b></div></div></div>`;}).join("");
 
   return `<div class="secTitle" style="color:#7fb2e0;font-size:10.5px">🤖 MORNING BOT · paper portfolio · regime-aware · self-tuning</div>
@@ -597,6 +598,26 @@ document.addEventListener("click",async e=>{
       botBusy=true;if(store[sel])render();
       try{await botSave(botDefaultState());botState=await botPretrain();botSetBadge(botState);}catch(err){botState=await botLoad();}
       botBusy=false;if(store[sel])render(); break;}
+    case "botclose": {
+      if(!botState)break;
+      const id=+el.dataset.id;
+      const pos=(botState.positions||[]).find(p=>p.id===id);
+      if(!pos)break;
+      // best available live price for this position's asset
+      const px=(pos.sym===asset&&store[1])?store[1].c[store[1].c.length-1]:((botState.lastPx&&botState.lastPx[pos.sym])||pos.entry);
+      const leg=(pos.dir===1?(px-pos.entry)/pos.entry:(pos.entry-px)/pos.entry)*100;
+      const pnlPct=pos.scaled?0.5*((pos.dir===1?(pos.t1-pos.entry)/pos.entry:(pos.entry-pos.t1)/pos.entry)*100)+0.5*leg:leg;
+      const usd=botState.equity*(pnlPct/100)*(pos.sizePct/100);
+      const m=pos.sym+' '+(pos.dir===1?'LONG':'SHORT')+' at $'+Math.round(px).toLocaleString('en-US')+
+        '\n\nClosing now locks in '+(usd>=0?'+$':'−$')+Math.abs(usd).toLocaleString('en-US',{maximumFractionDigits:2})+
+        ' ('+(pnlPct>=0?'+':'')+pnlPct.toFixed(1)+'%).'+
+        '\n\nClose this paper trade now?';
+      if(typeof confirm==='function'&&!confirm(m))break;
+      await botQueue(async()=>{const stf=await botLoad();
+        const p=(stf.positions||[]).find(q=>q.id===id);
+        if(p)botCloseTrade(stf,p,px,Date.now(),'manual');
+        await botSave(stf);botState=stf;botSetBadge(stf);});
+      if(store[sel])render(); break;}
     case "botbuy": case "botsell": {
       if(!botState||!store[1])break;
       const dir=el.dataset.act==='botbuy'?1:-1, price=store[1].c[store[1].c.length-1];

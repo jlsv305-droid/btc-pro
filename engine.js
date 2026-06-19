@@ -665,7 +665,7 @@ function botLearnFrom(st,votes,entry,exit,atrPctEntry,regime){
     st.lessons=st.lessons.slice(-12);
   }
 }
-const BOT_REASON_TXT={stop:'stop loss',trail:'trailing stop',target:'final target',time:'time limit','signal flip':'signal flip'};
+const BOT_REASON_TXT={stop:'stop loss',trail:'trailing stop',target:'final target',time:'time limit','signal flip':'signal flip',manual:'closed by you'};
 function botCloseTrade(st,pos,exit,exitT,reason){
   if(!pos)return null;
   const leg=p=>(pos.dir===1?(p-pos.entry)/pos.entry:(pos.entry-p)/pos.entry)*100;
