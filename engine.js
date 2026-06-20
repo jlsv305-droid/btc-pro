@@ -827,7 +827,7 @@ async function _botRunMorning(opts){
       riskPct:d.riskPct,price:f.price,brake:d.brake,newsBrake:d.newsBrake,regime:f.regime,atrPct:+f.atrPct.toFixed(2),
       reasons:d.reasons.slice(0,5).map(r=>({name:r.name,v:r.v,w:+r.w.toFixed(2)}))};
   }
-  st.lastRunDay=today;
+  if(Object.keys(byAsset).length>0)st.lastRunDay=today; // don't mark done if all assets failed (allows retry on next alarm)
   st.lastScan={date:today,ranAt:Date.now(),late:now.getHours()>=9,byAsset};
   botLog(st,'info','Scan '+today+': '+BOT_ASSETS.map(s=>byAsset[s]?s+' '+byAsset[s].action:s+' n/a').join(' · '));
   await botSave(st);
