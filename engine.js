@@ -577,7 +577,7 @@ function botSeries(S,fngArr){
     votes.bbx=pb<0.05?1:(pb>0.95?-1:0);
     votes.wk=weeklyAt(S.t[i]);
     let fv=0;
-    if(fngByDay){const x=fngByDay[botDayStr(new Date(S.t[i]))];if(x!=null){if(x<=20)fv=1;else if(x>=80)fv=-1;}}
+    if(fngByDay){const x=fngByDay[botDayStr(new Date(S.t[i]))];if(x!=null){if(x<=25)fv=1;else if(x>=75)fv=-1;}}
     votes.fng=fv;
     votes.news=0; // historical bars have no news feed; live scans set it
     const bull=price>=E200[i];
