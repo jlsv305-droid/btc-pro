@@ -446,7 +446,7 @@ function botMigrate(st){
     delete st.weights;
     st.params=st.params||Object.assign({},BOT_DEFAULT_PARAMS);
     st.news=st.news||null; st.study=st.study||null;
-    BOT_SIGNALS.forEach(s=>{if(!st.learn[s.id])st.learn[s.id]={hits:0,total:0};});
+    st.learn=st.learn||{}; BOT_SIGNALS.forEach(s=>{if(!st.learn[s.id])st.learn[s.id]={hits:0,total:0};});
   }
   /* additive fields (safe for any version) */
   st.netDeposits=st.netDeposits||0;
