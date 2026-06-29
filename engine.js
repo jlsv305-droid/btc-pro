@@ -576,8 +576,8 @@ function botSeries(S,fngArr){
     const pb=(BB.up[i]==null||BB.up[i]===BB.lo[i])?0.5:(price-BB.lo[i])/(BB.up[i]-BB.lo[i]);
     votes.bbx=pb<0.05?1:(pb>0.95?-1:0);
     votes.wk=weeklyAt(S.t[i]);
-    let fv=0;
-    if(fngByDay){const x=fngByDay[botDayStr(new Date(S.t[i]))];if(x!=null){if(x<=25)fv=1;else if(x>=75)fv=-1;}}
+    let fv=0,fngRaw=null;
+    if(fngByDay){const x=fngByDay[botDayStr(new Date(S.t[i]))];if(x!=null){fngRaw=x;if(x<=25)fv=1;else if(x>=75)fv=-1;}}
     votes.fng=fv;
     votes.news=0; // historical bars have no news feed; live scans set it
     const bull=price>=E200[i];
@@ -596,7 +596,7 @@ function botSeries(S,fngArr){
       const dn=price<E20[i]&&(E20[i]<E20[i-5]||(sharp&&ret7<0));
       if(up&&!dn)nearTrend=1; else if(dn&&!up)nearTrend=-1;
     }
-    return {votes,atrPct:AT[i]/price*100,price,t:S.t[i],regime,nearTrend};
+    return {votes,atrPct:AT[i]/price*100,price,t:S.t[i],regime,nearTrend,fngRaw};
   };
   return {votesAt,n,atr:AT};
 }
@@ -619,9 +619,12 @@ function botDecide(f,st,setupId){
   const lastN=(st&&st.trades?st.trades.slice(-3):[]);
   const brake=(lastN.length===3&&lastN.every(t=>t.ret<=0))?0.5:1;
   const newsBrake=(botNewsFresh(st.news)&&st.news.vol>=0.6)?0.7:1; // event risk: smaller size
+  // contrarian guard: pánico extremo (≤20) → no abrir SHORT al tamaño completo; euforia extrema (≥80) → no abrir LONG completo
+  const fngBrake=(f.fngRaw!=null&&f.fngRaw<=20&&action==='SHORT')?0.5:
+                 (f.fngRaw!=null&&f.fngRaw>=80&&action==='LONG')?0.5:1;
   const sMult=botSetupMult(st,setupId||'morning');
   const stopDist=p.stopATR*Math.max(f.atrPct,0.5);
-  const riskPct=(BOT_RISK_MIN+(BOT_RISK_MAX-BOT_RISK_MIN)*conf)*brake*newsBrake*sMult;
+  const riskPct=(BOT_RISK_MIN+(BOT_RISK_MAX-BOT_RISK_MIN)*conf)*brake*newsBrake*fngBrake*sMult;
   let sizePct=sMult<=0?0:Math.round(Math.max(5,Math.min(100,riskPct/stopDist*100)));
   if(action==='FLAT')sizePct=0;
   const atrAbs=f.price*f.atrPct/100;
@@ -633,7 +636,7 @@ function botDecide(f,st,setupId){
     .map(s=>({id:s.id,name:s.name,v:f.votes[s.id]||0,w:W[s.id]||1}))
     .filter(r=>r.v!==0)
     .sort((a,b)=>Math.abs(b.w*b.v)-Math.abs(a.w*a.v));
-  return {action,score,conf,sizePct,stop,t1,t2,reasons,brake:brake<1,newsBrake:newsBrake<1,
+  return {action,score,conf,sizePct,stop,t1,t2,reasons,brake:brake<1,newsBrake:newsBrake<1,fngBrake:fngBrake<1,
     atrPct:f.atrPct,riskPct:+riskPct.toFixed(2),regime:f.regime,trailATR:p.trailATR};
 }
 /* learning: signals that voted are rewarded/punished by the move they
@@ -729,6 +732,7 @@ function botMakePendings(st,sym,f,S,score,now){
   const atrAbs=f.price*f.atrPct/100;
   const conf=Math.min(1,Math.abs(score)/0.4);
   const newsBrake=(botNewsFresh(st.news)&&st.news.vol>=0.6)?0.7:1;
+  const fngBrakePend=(f.fngRaw!=null&&f.fngRaw<=20&&lean===-1)?0.5:(f.fngRaw!=null&&f.fngRaw>=80&&lean===1)?0.5:1;
   const mk=(type,trigger)=>{
     if(trigger<=0)return;
     if(st.pending.some(x=>x.sym===sym&&x.type===type))return;
@@ -736,7 +740,7 @@ function botMakePendings(st,sym,f,S,score,now){
     const sMult=botSetupMult(st,setupId); if(sMult<=0)return;
     const stop=trigger-lean*p.stopATR*atrAbs, t1=trigger+lean*p.stopATR*atrAbs, t2=trigger+lean*p.t2ATR*atrAbs;
     const stopDist=p.stopATR*Math.max(f.atrPct,0.5);
-    const riskPct=(BOT_RISK_MIN+(BOT_RISK_MAX-BOT_RISK_MIN)*conf)*sMult*newsBrake;
+    const riskPct=(BOT_RISK_MIN+(BOT_RISK_MAX-BOT_RISK_MIN)*conf)*sMult*newsBrake*fngBrakePend;
     const sizePct=Math.round(Math.max(5,Math.min(100,riskPct/stopDist*100)));
     st.pending.push({id:st.seq++,sym,type,dir:lean,trigger,stop,t1,t2,sizePct,votes:f.votes,atrPct:f.atrPct,
       regime:f.regime,trailATR:p.trailATR,created:Date.now(),expires:Date.now()+BOT_PEND_HOURS*3600000,
@@ -824,7 +828,7 @@ async function _botRunMorning(opts){
     }
     if(!fightsTrend)botMakePendings(st,sym,f,S,d.score,now); // don't arm orders against the recent tape
     byAsset[sym]={action:d.action,score:+d.score.toFixed(3),conf:+d.conf.toFixed(2),sizePct:d.sizePct,
-      riskPct:d.riskPct,price:f.price,brake:d.brake,newsBrake:d.newsBrake,regime:f.regime,atrPct:+f.atrPct.toFixed(2),
+      riskPct:d.riskPct,price:f.price,brake:d.brake,newsBrake:d.newsBrake,fngBrake:d.fngBrake,fngRaw:f.fngRaw,regime:f.regime,atrPct:+f.atrPct.toFixed(2),
       reasons:d.reasons.slice(0,5).map(r=>({name:r.name,v:r.v,w:+r.w.toFixed(2)}))};
   }
   if(Object.keys(byAsset).length>0)st.lastRunDay=today; // don't mark done if all assets failed (allows retry on next alarm)
