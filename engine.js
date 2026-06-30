@@ -507,9 +507,9 @@ const BOT_FEEDS=[
   ['Decrypt','https://decrypt.co/feed']
 ];
 const BOT_LEX={
-  pos:[['etf approv',2.5],['etf inflow',2],['adoption',1],['halving',1],['rate cut',2],['institutional',1.2],['all-time high',1.5],['rally',1.2],['bullish',1],['accumulat',1],['buys',1],['reserve',1],['upgrade',0.8],['partnership',0.8],['surge',1.2]],
-  neg:[['hack',2.5],['exploit',2],['stolen',2],['lawsuit',1.5],['sues',2],['ban',1.8],['crash',2],['liquidat',1.5],['selloff',1.5],['sell-off',1.5],['bearish',1],['fraud',2],['bankrupt',2.5],['recession',1.5],['plunge',1.5],['tariff',1.2],['scam',1.5],['outflow',1.2],['dump',1],['warning',0.8]],
-  vol:[['fed ',1.5],['fomc',2],['cpi',1.8],['inflation',1.2],['etf',1],['hack',2],['war',2],['election',1.2],['sec ',1.2],['regulat',1],['halving',1],['liquidat',1.5],['crash',2],['emergency',2],['tariff',1.2]]
+  pos:[['etf approv',2.5],['etf inflow',2],['adoption',1],['halving',1],['rate cut',2],['institutional',1.2],['all-time high',1.5],['rally',1.2],['bullish',1],['accumulat',1],['buys',1],['reserve',1],['upgrade',0.8],['partnership',0.8],['surge',1.2],['short squeeze',2.0]],
+  neg:[['hack',2.5],['exploit',2],['stolen',2],['lawsuit',1.5],['sues',2],['ban',1.8],['crash',2],['liquidat',1.5],['selloff',1.5],['sell-off',1.5],['bearish',1],['fraud',2],['bankrupt',2.5],['recession',1.5],['plunge',1.5],['tariff',1.2],['scam',1.5],['outflow',1.2],['dump',1],['warning',0.8],['capitulation',1.5],['delisting',1.5],['contagion',1.8],['insolvent',2.0]],
+  vol:[['fed ',1.5],['fomc',2],['cpi',1.8],['inflation',1.2],['etf',1],['hack',2],['war',2],['election',1.2],['sec ',1.2],['regulat',1],['halving',1],['liquidat',1.5],['crash',2],['emergency',2],['tariff',1.2],['squeeze',1.0],['capitulation',1.5],['insolvent',1.5]]
 };
 function botScoreHeadline(title){
   const s=' '+title.toLowerCase()+' ';let sent=0,vol=0;
@@ -755,7 +755,7 @@ function botMakePendings(st,sym,f,S,score,now){
 function botCheckPendings(st,sym,H,now){
   now=now||new Date();
   st.pending=st.pending.filter(p=>{
-    if(p.sym===sym&&now.getTime()>p.expires){botLog(st,'info',sym+' pending '+(p.type==='dip'?'dip-buy':'breakout')+' expired untouched');return false;}
+    if(p.sym===sym&&now.getTime()>p.expires){botLog(st,'info',sym+' pending '+(p.type==='dip'?(p.dir===1?'dip-buy':'rally-sell'):'breakout')+' expired untouched');return false;}
     return true;});
   for(const p of st.pending.filter(x=>x.sym===sym).slice()){
     let fillT=null;
@@ -772,11 +772,11 @@ function botCheckPendings(st,sym,H,now){
     if(botSetupMult(st,p.type==='dip'?'dip':'brk')<=0)continue;
     const refP=last(H.c); // no pyramiding: skip if it would add to a same-direction loser
     if(st.positions.some(q=>q.sym===sym&&q.dir===p.dir&&((q.dir===1&&refP<q.entry)||(q.dir===-1&&refP>q.entry)))){
-      botLog(st,'info',sym+' pending '+(p.type==='dip'?'dip-buy':'breakout')+' cancelled — would add to a losing position');continue;}
+      botLog(st,'info',sym+' pending '+(p.type==='dip'?(p.dir===1?'dip-buy':'rally-sell'):'breakout')+' cancelled — would add to a losing position');continue;}
     st.positions.push({id:st.seq++,sym,dir:p.dir,entry:p.trigger,entryT:fillT,stop:p.stop,t1:p.t1,t2:p.t2,
       peak:p.trigger,scaled:false,sizePct:p.sizePct,votes:p.votes,atrPct:p.atrPct,regime:p.regime,trailATR:p.trailATR,
       date:botDayStr(new Date(fillT)),setup:p.type==='dip'?'dip':'brk',reasons:p.reasons});
-    botLog(st,'open',sym+' '+(p.dir===1?'LONG':'SHORT')+' opened at $'+Math.round(p.trigger).toLocaleString('en-US')+' · '+p.sizePct+'% ('+(p.type==='dip'?'dip-buy filled':'breakout filled')+')');
+    botLog(st,'open',sym+' '+(p.dir===1?'LONG':'SHORT')+' opened at $'+Math.round(p.trigger).toLocaleString('en-US')+' · '+p.sizePct+'% ('+(p.type==='dip'?(p.dir===1?'dip-buy':'rally-sell'):'breakout')+' filled)');
   }
 }
 /* Morning routine: per asset — exits, pendings, decision, entry, fresh pendings */
