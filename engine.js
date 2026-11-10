@@ -363,67 +363,143 @@ async function loadDailyFor(sym,days){
   return await fetchBinance(sym,"1d",Math.min(days||900,1000));
 }
 
-
-/* ============================================================================
-   VISOR PUBLICO — sin estrategia. El cerebro (senales, pesos, decision,
-   aprendizaje) vive en un repositorio privado y solo publica un resumen.
-   ============================================================================ */
-const BOT_ASSETS=['BTC','ETH'];
-const BOT_REGIME_NAMES={bullCalm:'BULL · calm',bullVol:'BULL · volatile',bearCalm:'BEAR · calm',bearVol:'BEAR · volatile'};
-const BOT_START_EQUITY=10000;
-const BOT_RUN_HOUR=8, BOT_RUN_MIN=30;
-const BOT_RISK_BUDGET=6.0;
-const BOT_SETUPS=[['morning','Morning signal'],['dip','Dip-buy limit'],['brk','Breakout stop'],['manual','Manual'],['trend','Trend core']];
-const BOT_SIGNALS=[];
+/* ===========================================================================
+   BOT PLUMBING — shared by the extension, the cloud runner and the public
+   viewer: account state, storage, cloud sync and P&L arithmetic.
+   There is NO strategy in this block.
+   =========================================================================== */
+const BOT_V=4;
+const BOT_START_EQUITY=100000;
+const BOT_FEE=0.001;               // fee + slippage per side on bot trades
+const BOT_COST=0.2;                // % round trip on manual trades
+const BOT_DAY=86400000;
+const BOT_SCAN_UTC_MIN=5;          // the daily review runs right after the UTC daily close
+const BOT_ASSETS=['BTC','ETH'];    // assets with a chart in the UI
+const BOT_SETUPS=[['rot','Rotation'],['tr','Trend'],['manual','Manual']];
+const BOT_REASON_TXT={rank:'dropped out of the strongest group',regime:'market filter turned off',weak:'its trend weakened',
+  data:'no market data',manual:'closed by you',stop:'stop loss',trail:'trailing stop',target:'final target',time:'time limit'};
 function botPad(n){return (n<10?'0':'')+n;}
 function botDayStr(d){return d.getFullYear()+'-'+botPad(d.getMonth()+1)+'-'+botPad(d.getDate());}
-function botNextRun(now){const t=new Date(now.getFullYear(),now.getMonth(),now.getDate(),8,35,0,0);if(t.getTime()<=now.getTime())t.setDate(t.getDate()+1);return t;}
-function botDefaultState(){return {version:3,equity:BOT_START_EQUITY,startEquity:BOT_START_EQUITY,netDeposits:0,cashFlows:[],
-  activity:[],createdAt:Date.now(),cores:{},manualPnl:0,trades:[],positions:[],pending:[],lastPx:{},news:null,study:null,
-  lastRunDay:null,lastScan:null,pretrained:true,pretrain:null,startPrice:null,startDate:null,lessons:[],setups:{},seq:1};}
+function botUtcDay(t){return new Date(t).toISOString().slice(0,10);}
+function botMs(now){return (now instanceof Date)?now.getTime():(now||Date.now());}
+/* open time of the last COMPLETED UTC daily candle */
+function botLastClosedT(now){return Math.floor(botMs(now)/BOT_DAY)*BOT_DAY-BOT_DAY;}
+/* next daily review (just after the next UTC daily close) */
+function botNextRun(now){const t=botMs(now);let n=Math.floor(t/BOT_DAY)*BOT_DAY+BOT_SCAN_UTC_MIN*60000;if(n<=t)n+=BOT_DAY;return new Date(n);}
+/* prices from $0.07 (DOGE) to $75,000 (BTC) */
+function botPx(p){if(p==null||!isFinite(p))return '—';const a=Math.abs(p);
+  return '$'+(a>=1000?Math.round(p).toLocaleString('en-US'):a>=1?p.toFixed(2):a>=0.01?p.toFixed(4):p.toFixed(6));}
+function botDefaultState(){
+  const setups={};BOT_SETUPS.forEach(x=>setups[x[0]]={hits:0,total:0,sumRet:0,usd:0});
+  return {version:BOT_V,equity:BOT_START_EQUITY,startEquity:BOT_START_EQUITY,netDeposits:0,cashFlows:[],
+    activity:[],createdAt:Date.now(),trades:[],positions:[],lastPx:{},eqHist:[],news:null,
+    lastRunDay:null,lastScan:null,v4:{lastBarT:0,anchor:null},startPrice:null,startDate:null,
+    setups,manualPnl:0,seq:1};
+}
+/* v4 keeps a different kind of book (dollar-cost positions, rule exits), so a
+   pre-v4 state cannot be carried over: it starts a fresh account. */
 function botMigrate(st){
   if(!st)return st;
-  st.version=st.version||3;
-  ['trades','positions','pending','activity','cashFlows','lessons'].forEach(k=>{st[k]=st[k]||[];});
-  st.cores=st.cores||{};st.lastPx=st.lastPx||{};st.setups=st.setups||{};
+  if(!(st.version>=BOT_V))return botDefaultState();
+  ['trades','positions','activity','cashFlows','eqHist'].forEach(k=>{st[k]=st[k]||[];});
+  st.lastPx=st.lastPx||{};st.setups=st.setups||{};st.v4=st.v4||{lastBarT:0,anchor:null};
   st.netDeposits=st.netDeposits||0;st.manualPnl=st.manualPnl||0;
-  st.createdAt=st.createdAt||Date.now();
+  st.createdAt=st.createdAt||Date.now();st.seq=st.seq||1;
   return st;
 }
-function botLog(st,kind,txt){st.activity=st.activity||[];st.activity.push({ts:Date.now(),kind,txt});
-  if(st.activity.length>200)st.activity=st.activity.slice(-200);}
+/* ---- P&L arithmetic. Bot positions carry their dollar cost (usd) and pay
+   BOT_FEE on each side; manual positions are a % of the account. ---- */
+function botPosUsd(st,o){return o.usd!=null?o.usd:st.equity*(o.sizePct||0)/100;}
+function botPosValue(o,px){return o.usd*(1-BOT_FEE)*(px/o.entry);}
+function botPosPnl(st,o,px){
+  if(o.setup==='manual'){
+    const leg=p=>(o.dir===1?(p-o.entry)/o.entry:(o.entry-p)/o.entry)*100;
+    const pct=(o.scaled?0.5*leg(o.t1)+0.5*leg(px):leg(px))-BOT_COST;
+    return {pct,usd:botPosUsd(st,o)*pct/100};
+  }
+  const v=botPosValue(o,px)*(1-BOT_FEE);
+  return {pct:(v/o.usd-1)*100,usd:v-o.usd};
+}
+/* mark-to-market: realized equity + what the open bot positions would return now */
+function botMtm(st,pxOf){
+  let unreal=0,invested=0;
+  (st.positions||[]).forEach(o=>{
+    if(o.setup==='manual')return;
+    const px=(pxOf&&pxOf(o.sym))||(st.lastPx&&st.lastPx[o.sym])||o.entry;
+    const p=botPosPnl(st,o,px);unreal+=p.usd;invested+=o.usd+p.usd;
+  });
+  return {unreal,invested,equity:st.equity+unreal};
+}
+/* append-only operational ledger: every buy, sale and daily review is recorded */
+function botLog(st,kind,txt){
+  st.activity=st.activity||[];
+  st.activity.push({ts:Date.now(),kind,txt});
+  if(st.activity.length>300)st.activity=st.activity.slice(-300);
+}
+/* serialize all bot operations — two flows can never clobber each other's state */
 let _botChain=Promise.resolve();
-function botQueue(fn){const p=_botChain.then(fn,fn);_botChain=p.then(()=>{},()=>{});return p;}
-function botStorageGet(){return new Promise(res=>{try{res(JSON.parse(localStorage.getItem('botState')||'null'));}catch(e){res(null);}});}
-function botStorageSet(st){return new Promise(res=>{try{localStorage.setItem('botState',JSON.stringify(st));}catch(e){}res(true);});}
+function botQueue(fn){
+  const p=_botChain.then(fn,fn);
+  _botChain=p.then(()=>{},()=>{});
+  return p;
+}
+function botStorageGet(){
+  return new Promise(res=>{
+    try{
+      if(typeof chrome!=='undefined'&&chrome.storage&&chrome.storage.local){
+        chrome.storage.local.get('botState',o=>res((o&&o.botState)||null));return;
+      }
+    }catch(e){}
+    try{res(JSON.parse(localStorage.getItem('botState')||'null'));}catch(e){res(null);}
+  });
+}
+function botStorageSet(st){
+  return new Promise(res=>{
+    try{
+      if(typeof chrome!=='undefined'&&chrome.storage&&chrome.storage.local){
+        chrome.storage.local.set({botState:st},()=>res(true));return;
+      }
+    }catch(e){}
+    try{localStorage.setItem('botState',JSON.stringify(st));}catch(e){}
+    res(true);
+  });
+}
 async function botLoad(){const st=await botStorageGet();return botMigrate(st)||botDefaultState();}
 function botSave(st){return botStorageSet(st);}
-function botNeedsRun(){return false;}   // el visor jamas opera localmente
-function botUsedRisk(st){return (st.positions||[]).reduce((a,p)=>a+((p.scaled||p.stop==null)?0:(p.sizePct/100)*(Math.abs(p.entry-p.stop)/p.entry*100)),0);}
-function botSetBadge(){ /* sin insignia en el visor */ }
+/* ===== CLOUD MODE: the bot runs 24/7 on GitHub Actions; devices are viewers =====
+   The runner marks the state source:'cloud'. Devices mirror the public summary
+   and keep their own local MANUAL trades layered on top. A cloud account reset
+   (new createdAt) also clears that local layer. */
 const BOT_CLOUD_URL='https://jlsv305-droid.github.io/btc-pro/cloud-summary.json';
 function botCloudFresh(st){return !!(st&&st.source==='cloud'&&st.cloudRunAt&&Date.now()-st.cloudRunAt<26*3600000);}
-/* Devices sync from the PUBLIC SUMMARY (no weights/params/votes — the brain
-   stays private in the cloud repo). Cloud fields overlay the local state;
-   local-only knowledge (weights, params, manual layer) is preserved. */
 async function botSyncCloud(){
   try{
     const r=await fetch(BOT_CLOUD_URL,{cache:'no-store'});if(!r.ok)return null;
     const sum=await r.json();
-    if(!sum||!sum.cloudRunAt)return null;
+    if(!sum||!sum.cloudRunAt||!(sum.version>=BOT_V))return null;
     const local=await botLoad();
     if(local.source==='cloud'&&local.cloudRunAt&&local.cloudRunAt>=sum.cloudRunAt)return local;
-    const manPos=(local.positions||[]).filter(p=>p.setup==='manual');
-    const manTr=(local.trades||[]).filter(t=>t.localManual);
+    const same=local.createdAt===sum.createdAt;
+    const manPos=same?(local.positions||[]).filter(p=>p.setup==='manual'):[];
+    const manTr=same?(local.trades||[]).filter(t=>t.localManual):[];
     const merged=botMigrate(Object.assign({},local,sum));
     merged.positions=(sum.positions||[]).filter(p=>p.setup!=='manual').concat(manPos);
-    merged.trades=(sum.trades||[]).concat(manTr).slice(-400);
-    merged.manualPnl=local.manualPnl||0;
-    merged.lastPx=Object.assign({},local.lastPx||{},sum.lastPx||{});
+    merged.trades=(sum.trades||[]).concat(manTr).sort((a,b)=>(a.exitT||0)-(b.exitT||0));
+    merged.manualPnl=same?(local.manualPnl||0):0;
+    merged.lastPx=Object.assign({},same?(local.lastPx||{}):{},sum.lastPx||{});
     merged.source='cloud';
     await botSave(merged);
     return merged;
   }catch(e){return null;}
+}
+function botSetBadge(st){
+  try{
+    if(typeof chrome==='undefined'||!chrome.action||!chrome.action.setBadgeText)return;
+    const n=st&&st.positions?st.positions.length:0;
+    const on=!!(st&&st.lastScan&&st.lastScan.regimeOn);
+    chrome.action.setBadgeText({text:n>0?String(n):''});
+    chrome.action.setBadgeBackgroundColor({color:on?'#00c853':'#5a5f5a'});
+  }catch(e){}
 }
 
 /* ===================== MINER BREAK-EVEN ESTIMATE =====================
@@ -449,6 +525,13 @@ async function fetchMinerCost(){
   }catch(e){return null;}
 }
 
+
+/* ============================================================================
+   VISOR PUBLICO — sin estrategia. El cerebro (reglas, universo, parametros)
+   vive en un repositorio privado y solo publica un resumen de lo que hizo.
+   ============================================================================ */
+const BOT_HAS_BRAIN=false;
+function botNeedsRun(){return false;}   // el visor jamas opera localmente
 /* stubs: en el visor no hay cerebro local */
 async function botEnsureReady(){const s=await botSyncCloud();return s||await botLoad();}
 async function botPretrain(){return await botLoad();}
@@ -456,7 +539,6 @@ async function botRunMorning(){return {skipped:true,state:await botLoad()};}
 async function botCheckExits(){const s=await botSyncCloud();return {state:s||await botLoad(),checked:!!s};}
 async function botNightly(){return await botLoad();}
 function botView(){return null;}
+function botManualPlan(){return null;}
 function botOpenManual(){return null;}
 function botCloseTrade(){return null;}
-function botCoreClose(){return null;}
-function botScore(){return 0;}

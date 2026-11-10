@@ -129,10 +129,13 @@ function setupChart(){
   cv.ontouchend=()=>{drag=null;};
 }
 
-/* ============================ MORNING BOT CARD ============================ */
+/* ============================ BOT CARD (v4) ============================ */
 function drawBotEq(){
   const cv=document.getElementById('botEq'); if(!cv||!botState)return;
-  const eq=[botState.startEquity||10000].concat(botState.trades.map(t=>t.eqAfter));
+  const st=botState;
+  const hist=(st.eqHist||[]).map(x=>x[1]);
+  const eq=[st.startEquity||100000].concat(hist.length?hist:st.trades.filter(t=>!t.localManual).map(t=>t.eqAfter));
+  eq.push(botMtm(st).equity);
   if(eq.length<2)return;
   const dpr=window.devicePixelRatio||1,w=cv.clientWidth||300,H=46;
   cv.width=w*dpr;cv.height=H*dpr;const ctx=cv.getContext('2d');ctx.scale(dpr,dpr);
@@ -142,175 +145,139 @@ function drawBotEq(){
   ctx.strokeStyle=eq[eq.length-1]>=eq[0]?'#00e676':'#ff1744';ctx.lineWidth=1.6;ctx.stroke();
 }
 function renderBot(curPrice){
-  if(!botState)return `<div class="secTitle">🤖 MORNING BOT · paper trading</div><div class="paper"><div class="paperEmpty">Starting up the bot…</div></div>`;
-  const st=botState, scan=st.lastScan, isExt=(typeof chrome!=='undefined'&&chrome.alarms);
-  const nr=botNextRun(new Date());
-  const nrTxt=nr.toLocaleDateString(undefined,{weekday:'short',month:'short',day:'numeric'})+' '+nr.toLocaleTimeString([],{hour:'2-digit',minute:'2-digit'});
-  const startEq=st.startEquity||10000;
-  // per-trade $ P&L = the equity change caused by THE TRADE only (excludes deposits).
-  // stored as t.usd going forward; reconstructed from ret×size for older trades.
-  const tradeUsd=t=>{if(t.usd!=null)return t.usd;
-    const r=(t.ret/100)*(t.sizePct/100);return r<=-1?0:+(t.eqAfter*r/(1+r)).toFixed(2);};
-  const tr=st.trades.map(t=>Object.assign({},t,{dollars:tradeUsd(t)}));
-  const wins=tr.filter(t=>t.ret>0).length;
-  const winRate=tr.length?Math.round(wins/tr.length*100):null;
-  const netDep=st.netDeposits||0;
-  const realized=st.equity-startEq-netDep;
+  if(!botState)return `<div class="secTitle">🤖 BTC PRO BOT · paper trading</div><div class="paper"><div class="paperEmpty">Starting up the bot…</div></div>`;
+  const st=botState, scan=st.lastScan, cloud=botCloudFresh(st);
+  const brain=(typeof BOT_HAS_BRAIN!=='undefined'&&BOT_HAS_BRAIN);
+  const startEq=st.startEquity||100000, netDep=st.netDeposits||0;
   const pxOf=sym=>(sym===asset&&curPrice)?curPrice:(st.lastPx&&st.lastPx[sym])||null;
-  /* unrealized P&L across all open positions (banked halves included) */
-  const positions=st.positions||[];
-  const upnl=positions.map(o=>{
-    const ref=pxOf(o.sym)||o.entry;
-    const leg=p=>(o.dir===1?(p-o.entry)/o.entry:(o.entry-p)/o.entry)*100;
-    const pct=o.scaled?0.5*leg(o.t1)+0.5*leg(ref):leg(ref);
-    return {o,pct,usd:st.equity*(pct/100)*(o.sizePct/100)};
-  });
-  /* trend cores: unrealized P&L + cards */
-  const coreList=Object.entries(st.cores||{}).filter(x=>x[1]&&x[1].active).map(([sym,co])=>{
-    const ref=pxOf(sym)||co.entry;
-    const pct=(ref-co.entry)/co.entry*100;
-    return {sym,co,pct,usd:st.equity*(pct/100)*(co.sizePct/100)};
-  });
-  const coreUnreal=coreList.reduce((a,x)=>a+x.usd,0);
-  const unreal=upnl.reduce((a,x)=>a+x.usd,0)+coreUnreal;
-  const totalPnl=realized+unreal, totalPct=totalPnl/(startEq+Math.max(0,netDep))*100;
-  const gw=tr.filter(t=>t.dollars>0).reduce((a,t)=>a+t.dollars,0);
-  const gl=Math.abs(tr.filter(t=>t.dollars<=0).reduce((a,t)=>a+t.dollars,0));
-  const pf=tr.length?(gl>0?(gw/gl):(gw>0?Infinity:null)):null;
-  const best=tr.length?Math.max(...tr.map(t=>t.dollars)):null;
-  const worst=tr.length?Math.min(...tr.map(t=>t.dollars)):null;
-  const holdRet=(st.startPrice&&pxOf('BTC'))?((pxOf('BTC')/st.startPrice-1)*100):null;
   const money=v=>(v<0?'−$':'+$')+Math.abs(v).toLocaleString('en-US',{maximumFractionDigits:Math.abs(v)<100?2:0});
   const pnlCol=v=>v>0.005?'#00e676':v<-0.005?'#ff1744':'#ffb300';
   const fmtD=t=>new Date(t).toLocaleDateString(undefined,{month:'short',day:'numeric'});
-  const usedRisk=botUsedRisk(st);
+  const nameOf=id=>(BOT_SETUPS.find(s=>s[0]===id)||[0,'—'])[1];
+  const live=(st.positions||[]).map(o=>{const px=pxOf(o.sym)||o.entry;return Object.assign({o,px},botPosPnl(st,o,px));});
+  const botPos=live.filter(x=>x.o.setup!=='manual').sort((a,b)=>a.o.setup===b.o.setup?b.usd-a.usd:(a.o.setup<b.o.setup?-1:1));
+  const manPos=live.filter(x=>x.o.setup==='manual');
+  const unreal=botPos.reduce((a,x)=>a+x.usd,0);
+  const realized=st.equity-startEq-netDep;
+  const totalPnl=realized+unreal, totalPct=totalPnl/(startEq+Math.max(0,netDep))*100;
+  const eqNow=st.equity+unreal;
+  const invested=botPos.reduce((a,x)=>a+x.o.usd+x.usd,0), invPct=eqNow>0?Math.max(0,Math.min(100,invested/eqNow*100)):0;
+  const all=(st.trades||[]).slice().sort((a,b)=>(a.exitT||0)-(b.exitT||0));
+  const tr=all.filter(t=>!t.localManual);
+  const sleeves=BOT_SETUPS.filter(x=>x[0]!=='manual').map(([id,nm])=>Object.assign({id,nm},{hits:0,total:0,usd:0},(st.setups||{})[id]||{}));
+  const closedN=Math.max(tr.length,sleeves.reduce((a,s)=>a+(s.total||0),0));
+  const winsN=Math.max(tr.filter(t=>t.usd>0).length,sleeves.reduce((a,s)=>a+(s.hits||0),0));
+  const winRate=closedN?Math.round(winsN/closedN*100):null;
+  const gw=tr.filter(t=>t.usd>0).reduce((a,t)=>a+t.usd,0), gl=Math.abs(tr.filter(t=>t.usd<=0).reduce((a,t)=>a+t.usd,0));
+  const pf=tr.length?(gl>0?(gw/gl):(gw>0?Infinity:null)):null;
+  const best=tr.length?Math.max(...tr.map(t=>t.usd)):null, worst=tr.length?Math.min(...tr.map(t=>t.usd)):null;
+  const holdRet=(st.startPrice&&pxOf('BTC'))?((pxOf('BTC')/st.startPrice-1)*100):null;
+  const nTrades=closedN+botPos.length;
+  const weeks=(Date.now()-(st.createdAt||Date.now()))/(7*86400000);
+  const perWeek=weeks>=1?nTrades/weeks:null;
+  const nr=botNextRun(new Date());
+  const nrTxt=nr.toLocaleDateString(undefined,{weekday:'short'})+' '+nr.toLocaleTimeString([],{hour:'2-digit',minute:'2-digit'});
 
-  /* per-asset scan summary */
-  const scanLine=scan?BOT_ASSETS.map(sym=>{const a=scan.byAsset&&scan.byAsset[sym];if(!a)return '';
-    const col=a.action==='LONG'?'#00e676':a.action==='SHORT'?'#ff5c7a':'#ffb300';
-    return `<b>${sym}</b> <b style="color:${col}">${a.action}</b> <small style="color:#7d827d">score ${a.score>0?'+':''}${a.score}</small>`;
-  }).filter(Boolean).join(' &nbsp;·&nbsp; '):'';
+  /* open positions: one compact row each, tap for details */
+  const posHtml=botPos.map(x=>{const o=x.o,c=pnlCol(x.usd);
+    const days=Math.max(0,Math.floor((Date.now()-o.entryT)/86400000));
+    return `<div class="trade"><div class="trHead" data-act="tg" data-id="bp${o.id}">
+      <span><b style="color:#9ff0c4">${o.sym}</b> <small style="color:#7d827d">${nameOf(o.setup)} · ${fmt(o.usd)} · ${days}d</small></span>
+      <b style="color:${c}">${money(x.usd)} <small style="font-weight:600">${x.pct>=0?'+':''}${x.pct.toFixed(1)}%</small></b></div>
+      <div id="bp${o.id}" class="trDet">
+        <div class="trd"><span>Bought</span><b>${botPx(o.entry)} · ${fmtD(o.entryT)}</b></div>
+        <div class="trd"><span>Price now</span><b>${botPx(x.px)}</b></div>
+        <div class="trd"><span>Amount</span><b>${fmt(o.usd)} · ${o.sizePct}% of the account</b></div>
+        <div class="trd"><span>It will be sold when</span><b style="text-align:right">${o.setup==='rot'?'it leaves the strongest group, or the market filter turns off':'its trend weakens'}</b></div>
+        ${cloud?'':`<button class="logBtn ghost" data-act="botclose" data-id="${o.id}" style="width:100%;margin-top:8px">✕ Close this trade now</button>`}
+      </div></div>`;}).join('');
 
-  /* trend core cards */
-  const coreHtml=coreList.map(x=>{const pc=x.pct>=0?'#00e676':'#ff1744';
-    return `<div class="pos" style="border-color:#7fb2e0;margin-top:10px;background:linear-gradient(180deg,rgba(41,121,255,.06),transparent)">
-      <div class="posTop"><span class="posState" style="color:#7fb2e0">⭐ ${x.sym} TREND CORE · ${x.co.sizePct}%</span>
-        <span class="posPnl" style="color:${pc}">${money(x.usd)} <small style="font-weight:600">${x.pct>=0?'+':''}${x.pct.toFixed(1)}%</small></span></div>
-      <div class="posGrid">
-        <div><span>Riding since</span><b>${x.co.date||'—'}</b></div>
-        <div><span>Entry</span><b>${fmt(x.co.entry)}</b></div>
-      </div>
-      <div class="posNote">Rides the whole trend: stays in while price closes above the 200-day average, goes to CASH when it closes below. No target, no time limit. Corrected backtest: about +22% per window vs +30% for buy-and-hold — it earns less in bull markets but loses much less in bear markets.</div>
-      <button class="logBtn ghost" data-act="botclosecore" data-sym="${x.sym}" style="width:100%;margin-top:9px">✕ Close core now</button>
-    </div>`;}).join('');
-
-  /* open positions */
-  const posHtml=upnl.map(x=>{const o=x.o,isL=o.dir===1,pc=x.pct>=0?'#00e676':'#ff1744';
-    const setupName=(BOT_SETUPS.find(s=>s[0]===(o.setup||'morning'))||[0,'—'])[1];
+  /* your manual trades (device-local, separate from the bot's record) */
+  const manHtml=manPos.map(x=>{const o=x.o,isL=o.dir===1,pc=x.pct>=0?'#00e676':'#ff1744';
     return `<div class="pos" style="border-color:${pc};margin-top:10px">
-      <div class="posTop"><span class="posState" style="color:${isL?'#00e676':'#ff7eb6'}">● ${o.sym} ${isL?'LONG':'SHORT'} · ${o.sizePct}%${o.scaled?' · <small style="color:#69f0ae">50% banked ✓</small>':''}</span>
+      <div class="posTop"><span class="posState" style="color:${isL?'#00e676':'#ff7eb6'}">● ${o.sym} ${isL?'LONG':'SHORT'} · MANUAL · ${o.sizePct}%${o.scaled?' · <small style="color:#69f0ae">50% banked ✓</small>':''}</span>
         <span class="posPnl" style="color:${pc}">${money(x.usd)} <small style="font-weight:600">${x.pct>=0?'+':''}${x.pct.toFixed(1)}%</small></span></div>
       <div class="posGrid">
-        <div><span>Setup · opened</span><b>${setupName} · ${o.date}</b></div>
-        <div><span>Entry</span><b>${fmt(o.entry)}</b></div>
-        <div><span>${o.scaled?'Trailing stop':'Stop loss'}</span><b style="color:${o.scaled?'#ffd54f':'#ff8a80'}">${fmt(o.stop)}${o.scaled?' <small style="color:#7d827d">can’t lose now</small>':''}</b></div>
-        ${o.scaled?`<div><span>Final target</span><b style="color:#69f0ae">${fmt(o.t2)}</b></div>`
-                  :`<div><span>Target 1 (take 50%)</span><b style="color:#69f0ae">${fmt(o.t1)}</b></div>
-        <div><span>Final target</span><b style="color:#69f0ae">${fmt(o.t2)}</b></div>`}
+        <div><span>Opened</span><b>${o.date}</b></div>
+        <div><span>Entry</span><b>${botPx(o.entry)}</b></div>
+        <div><span>${o.scaled?'Trailing stop':'Stop loss'}</span><b style="color:${o.scaled?'#ffd54f':'#ff8a80'}">${botPx(o.stop)}</b></div>
+        ${o.scaled?`<div><span>Final target</span><b style="color:#69f0ae">${botPx(o.t2)}</b></div>`
+                  :`<div><span>Target 1 (take 50%)</span><b style="color:#69f0ae">${botPx(o.t1)}</b></div>
+        <div><span>Final target</span><b style="color:#69f0ae">${botPx(o.t2)}</b></div>`}
       </div>
       <button class="logBtn ghost" data-act="botclose" data-id="${o.id}" style="width:100%;margin-top:9px">✕ Close this trade now</button>
     </div>`;}).join('');
 
-  /* pending (armed) orders */
-  const pendHtml=(st.pending||[]).map(p=>{
-    const tn=p.type==='dip'?'Dip-buy limit':'Breakout stop';
-    const exp=new Date(p.expires).toLocaleDateString(undefined,{weekday:'short'})+' '+new Date(p.expires).toLocaleTimeString([],{hour:'2-digit',minute:'2-digit'});
-    return `<div class="trd"><span>⏳ ${p.sym} ${p.dir===1?'LONG':'SHORT'} <small style="color:#7d827d">(${tn})</small></span><b>if price touches ${fmt(p.trigger)} <small style="color:#7d827d">· ${p.sizePct}% · expires ${exp}</small></b></div>`;
-  }).join('');
+  const sleeveHtml=sleeves.map(s=>{const open=botPos.filter(x=>x.o.setup===s.id).length;
+    return `<span class="bdChip"><i style="background:${s.usd>0?'#00e676':s.usd<0?'#ff5c7a':'#7d827d'}"></i>${s.nm} <b>${s.hits}/${s.total} won</b> <small style="color:#7d827d">${s.total?money(s.usd)+' · ':''}${open} open</small></span>`;}).join('');
 
-  /* setups record */
-  const setupHtml=BOT_SETUPS.map(([id,nm])=>{const s=(st.setups||{})[id]||{hits:0,total:0,mult:1};
-    const col=s.mult===0?'#ff5c7a':s.mult<1?'#ffd54f':'#7d827d';
-    return `<span class="bdChip"><i style="background:${col}"></i>${nm} <b>${s.total?s.hits+'/'+s.total:'0/0'}</b>${s.mult<1?` <small style="color:${col}">${s.mult===0?'off':'½ size'}</small>`:''}</span>`;
-  }).join('');
-
-  const curReg=(scan&&scan.byAsset&&scan.byAsset.BTC&&scan.byAsset.BTC.regime)||'bearVol';
-  const regW=(st.weightsR&&st.weightsR[curReg])||{};
   const news=st.news;
-  const newsHtml=news?`<div class="ensBd"><div class="ensBdTitle">📰 News radar — ${news.n} headlines, last 36h <span class="ig" data-act="tip" data-tip="Titulares de CoinDesk, Cointelegraph y Decrypt puntuados por palabras clave: sentimiento alcista/bajista y riesgo de volatilidad (Fed, hacks, ETF, demandas...). Vota como senal #11 y reduce el tamano 30% cuando el riesgo de evento es alto.">ⓘ</span></div>
-    <div class="ensStats">Sentiment: <b style="color:${news.sent>=0.25?'#00e676':news.sent<=-0.25?'#ff5c7a':'#ffb300'}">${news.sent>=0.25?'bullish':news.sent<=-0.25?'bearish':'neutral'} (${news.sent>=0?'+':''}${news.sent})</b> · Event risk: <b style="color:${news.vol>=0.6?'#ff8a80':news.vol>=0.3?'#ffb300':'#69f0ae'}">${news.vol>=0.6?'HIGH — trade sizes cut 30%':news.vol>=0.3?'medium':'low'}</b></div>
+  const newsHtml=news?`<div class="ensBd"><div class="ensBdTitle">📰 News radar — ${news.n} headlines, last 36h <span class="ig" data-act="tip" data-tip="Titulares de CoinDesk, Cointelegraph y Decrypt puntuados por palabras clave. Es solo informativo: el bot v4 NO opera por noticias — en las pruebas, operar por titulares no dio ventaja. Decide solo con precios.">ⓘ</span></div>
+    <div class="ensStats">Sentiment: <b style="color:${news.sent>=0.25?'#00e676':news.sent<=-0.25?'#ff5c7a':'#ffb300'}">${news.sent>=0.25?'bullish':news.sent<=-0.25?'bearish':'neutral'} (${news.sent>=0?'+':''}${news.sent})</b> · Event risk: <b style="color:${news.vol>=0.6?'#ff8a80':news.vol>=0.3?'#ffb300':'#69f0ae'}">${news.vol>=0.6?'high':news.vol>=0.3?'medium':'low'}</b> <small style="color:#7d827d">· information only</small></div>
     ${(news.top||[]).map(x=>`<div class="trd"><span style="flex:1;line-height:1.35">${x.t}</span><b style="white-space:nowrap;margin-left:8px;color:${x.sent>0?'#69f0ae':x.sent<0?'#ff8a80':'#ffb300'}">${x.sent>0?'▲':x.sent<0?'▼':'•'}${x.vol>=1.5?' ⚡':''} <small style="color:#5f6b5f">${x.src}</small></b></div>`).join('')}
   </div>`:'';
-  const study=st.study;
-  const studyHtml=study?`<div class="ensBdNote" style="margin-top:7px">🌙 Nightly study (${new Date(study.at).toLocaleDateString(undefined,{month:'short',day:'numeric'})}): tested <b>${study.tested}</b> strategy variants — ${study.adopted?`<b style="color:#69f0ae">adopted new tuning</b> · entry ${study.params.th} · stop ${study.params.stopATR}×ATR · target ${study.params.t2ATR}×ATR · trail ${study.params.trailATR}×ATR`:'kept the current tuning (no variant beat it out-of-sample)'}</div>`:'';
-  const wRows=BOT_SIGNALS.map(s=>{const w=regW[s.id]||1;const L=st.learn[s.id]||{hits:0,total:0};
-      return {name:s.name,w,acc:L.total>=5?Math.round(L.hits/L.total*100):null};})
-    .sort((a,b)=>b.w-a.w)
-    .map(r=>`<span class="bdChip"><i style="background:${r.w>=1.05?'#00e676':r.w<=0.95?'#ff5c7a':'#7d827d'}"></i>${r.name} <b>${r.w.toFixed(2)}</b>${r.acc!=null?` <small style="color:#7d827d">${r.acc}% right</small>`:''}</span>`).join('');
-  const lessons=(st.lessons||[]).slice(-3).reverse().map(l=>`<div class="trd"><span>${new Date(l.ts).toLocaleDateString(undefined,{month:'short',day:'numeric'})}</span><b>${l.txt}</b></div>`).join('');
-  const activity=(st.activity||[]).slice(-20).reverse().map(a=>{
+  const activity=(st.activity||[]).slice(-30).reverse().map(a=>{
     const col=a.kind==='win'?'#69f0ae':a.kind==='loss'?'#ff8a80':a.kind==='open'?'#7fb2e0':'#9aa09a';
     const d=new Date(a.ts);
     const ds=d.toLocaleDateString(undefined,{month:'short',day:'numeric'})+' '+d.toLocaleTimeString([],{hour:'2-digit',minute:'2-digit'});
     return `<div class="trd"><span style="white-space:nowrap">${ds}</span><b style="color:${col};text-align:right;margin-left:10px">${a.txt}</b></div>`;}).join('');
 
-  const showN=botJournalAll?tr.length:12;
-  const jrows=tr.slice(-showN).reverse().map((t,k)=>{const id="bj"+k,c=t.ret>=0?"#00e676":"#ff1744";
-    const setupName=(BOT_SETUPS.find(s=>s[0]===(t.setup||'morning'))||[0,'—'])[1];
+  const showN=botJournalAll?all.length:12;
+  const jrows=all.slice(-showN).reverse().map((t,k)=>{const id="bj"+k,c=t.usd>=0?"#00e676":"#ff1744";
+    const days=Math.max(0,Math.round(((t.exitT||0)-(t.entryT||0))/86400000));
     return `<div class="trade"><div class="trHead" data-act="tg" data-id="${id}">
-      <span><b style="color:${t.dir===-1?'#ff7eb6':'#9ff0c4'}">${t.sym||'BTC'} ${t.dir===-1?'SHORT':'LONG'}</b> ${t.date} · ${t.sizePct}%</span><b style="color:${c}">${money(t.dollars)} <small style="font-weight:600">${t.ret>=0?'+':''}${t.ret.toFixed(1)}%</small></b></div>
-      <div id="${id}" class="trDet"><div class="trd"><span>Setup</span><b>${setupName}</b></div>
-        <div class="trd"><span>Entry → Exit</span><b>${fmt(t.entry)} → ${fmt(t.exit)}${t.scaled?' <small style="color:#69f0ae">(50% banked at T1)</small>':''}</b></div>
-        <div class="trd"><span>Closed</span><b>${fmtD(t.exitT)} · ${t.reason==='stop'?'stop loss':t.reason==='trail'?'trailing stop':t.reason==='target'?'final target':t.reason==='time'?'time limit':t.reason==='manual'?'closed by you':t.reason==='trend'?'trend ended (below 200-day)':'signal flip'}</b></div>
-        <div class="trd"><span>Equity after</span><b>${fmt(t.eqAfter)}</b></div></div></div>`;}).join("");
+      <span><b style="color:${t.dir===-1?'#ff7eb6':'#9ff0c4'}">${t.sym}${t.dir===-1?' SHORT':''}</b> <small style="color:#7d827d">${fmtD(t.exitT)} · ${nameOf(t.setup)}</small></span><b style="color:${c}">${money(t.usd)} <small style="font-weight:600">${t.ret>=0?'+':''}${t.ret.toFixed(1)}%</small></b></div>
+      <div id="${id}" class="trDet">
+        <div class="trd"><span>Bought → sold</span><b>${botPx(t.entry)} → ${botPx(t.exit)}</b></div>
+        <div class="trd"><span>Held</span><b>${fmtD(t.entryT)} → ${fmtD(t.exitT)} · ${days} day${days===1?'':'s'}</b></div>
+        ${t.cost!=null?`<div class="trd"><span>Amount</span><b>${fmt(t.cost)}</b></div>`:''}
+        <div class="trd"><span>Why it closed</span><b style="text-align:right">${BOT_REASON_TXT[t.reason]||t.reason}</b></div>
+        ${t.localManual?'':`<div class="trd"><span>Account after</span><b>${fmt(t.eqAfter)}</b></div>`}</div></div>`;}).join("");
 
-  return `<div class="secTitle" style="color:#7fb2e0;font-size:10.5px">🤖 MORNING BOT · paper portfolio · regime-aware · self-tuning</div>
+  const filterTxt=scan?(scan.regimeOn?'<b style="color:#00e676">ON</b> <small style="color:#7d827d">— market healthy, both strategies active</small>'
+                                     :'<b style="color:#ffb300">OFF</b> <small style="color:#7d827d">— market weak: the rotation waits in cash, only single-coin trends trade</small>'):'';
+  return `<div class="secTitle" style="color:#7fb2e0;font-size:10.5px">🤖 BTC PRO BOT v4 · paper portfolio · 17 coins · fixed rules</div>
     <div class="paper" style="border:1.5px solid #2a5d8e;box-shadow:0 0 32px rgba(41,121,255,.10)">
       <div class="paperTop">
-        <div class="paperNow">P&amp;L: <b style="color:${pnlCol(totalPnl)}">${money(totalPnl)}</b> <small style="color:#7d827d">(${totalPct>=0?'+':''}${totalPct.toFixed(2)}%) · equity ${fmt(st.equity+unreal)}${holdRet!=null?` · holding ${holdRet>=0?'+':''}${holdRet.toFixed(1)}%`:''}</small></div>
-        <button class="logBtn" data-act="botrun">${botBusy?'…':'▶ Scan now'}</button>
+        <div class="paperNow">P&amp;L: <b style="color:${pnlCol(totalPnl)}">${money(totalPnl)}</b> <small style="color:#7d827d">(${totalPct>=0?'+':''}${totalPct.toFixed(2)}%) · account ${fmt(eqNow)}${holdRet!=null?` · just holding BTC ${holdRet>=0?'+':''}${holdRet.toFixed(1)}%`:''}</small></div>
+        <button class="logBtn" data-act="botrun">${botBusy?'…':'↻ Check now'}</button>
       </div>
       <canvas id="botEq" style="height:46px;margin-top:8px"></canvas>
       <div class="posGrid" style="margin-top:9px">
-        <div><span>Open trades (unrealized)</span><b style="color:${pnlCol(unreal)}">${(positions.length||coreList.length)?`${money(unreal)} <small style="color:#7d827d">(${coreList.length?coreList.length+' core'+(coreList.length>1?'s':'')+(positions.length?' + ':''):''}${positions.length?positions.length+' tactical':''})</small>`:'—'}</b></div>
-        <div><span>Closed trades (realized)</span><b style="color:${pnlCol(realized)}">${tr.length?money(realized):'—'}</b></div>
+        <div><span>Open trades (unrealized)</span><b style="color:${pnlCol(unreal)}">${botPos.length?`${money(unreal)} <small style="color:#7d827d">(${botPos.length})</small>`:'—'}</b></div>
+        <div><span>Closed trades (realized)</span><b style="color:${pnlCol(realized)}">${closedN?money(realized):'—'}</b></div>
         <div><span>Total P&amp;L</span><b style="color:${pnlCol(totalPnl)}">${money(totalPnl)} <small style="color:#7d827d">(${totalPct>=0?'+':''}${totalPct.toFixed(2)}%)</small></b></div>
-        <div><span>Risk in use</span><b>${usedRisk.toFixed(1)}% <small style="color:#7d827d">of ${BOT_RISK_BUDGET}% budget</small></b></div>
+        <div><span>Invested now</span><b>${invPct.toFixed(0)}% <small style="color:#7d827d">· cash ${(100-invPct).toFixed(0)}%</small></b></div>
         <div><span>Started with</span><b>${fmt(startEq)}${st.startDate?` <small style="color:#7d827d">${st.startDate}</small>`:''}</b></div>
+        <div><span>Trades so far</span><b>${nTrades}${perWeek!=null?` <small style="color:#7d827d">≈ ${perWeek.toFixed(1)} per week</small>`:''}</b></div>
         ${netDep!==0?`<div><span>Net deposits/withdrawals</span><b>${money(netDep)}</b></div>`:''}
-        ${(st.manualPnl||0)!==0?`<div><span>Your manual trades (this device)</span><b style="color:${pnlCol(st.manualPnl)}">${money(st.manualPnl)}</b></div>`:''}
+        ${closedN?`<div><span>Trades won</span><b>${winsN} of ${closedN} <small style="color:#7d827d">(${winRate}%)</small></b></div>`:''}
         ${tr.length?`<div><span>Profit factor</span><b>${pf===Infinity?'∞':pf!=null?pf.toFixed(2):'—'} <small style="color:#7d827d">won per $1 lost</small></b></div>
         <div><span>Best / worst trade</span><b><span style="color:#69f0ae">${money(best)}</span> / <span style="color:#ff8a80">${money(worst)}</span></b></div>`:''}
+        ${(st.manualPnl||0)!==0?`<div><span>Your manual trades (this device)</span><b style="color:${pnlCol(st.manualPnl)}">${money(st.manualPnl)}</b></div>`:''}
       </div>
-      ${botCloudFresh(st)?`<div class="ensMeta" style="margin-top:6px;color:#69f0ae">☁️ <b>Running 24/7 in the cloud</b> — works even with all your devices off · last cloud run ${Math.round((Date.now()-st.cloudRunAt)/60000)} min ago <span class="ig" data-act="tip" data-tip="El bot corre en los servidores de GitHub (gratis): escaneo 8:35am, vigilante cada hora, estudio nocturno 9:35pm. Tu Mac y tu iPhone solo muestran lo que hace. Ya no depende de que tu computadora este prendida.">ⓘ</span></div>`:''}
-      <div class="ensMeta" style="margin-top:6px">${scan?`Last scan: <b>${scan.date}</b>${scan.late?' (late catch-up)':''} &nbsp; ${scanLine} · <small style="color:#7d827d">regime</small> <b style="color:#7fb2e0">${BOT_REGIME_NAMES[curReg]||curReg}</b>`:'No scan yet.'}
-        · Next: <b>${nrTxt}</b> ${isExt?'<small style="color:#5f6b5f">(automatic · exits &amp; pending orders watched hourly)</small>':'<small style="color:#ffb3aa">(open this page in the morning — as a plain file it can’t wake itself)</small>'}
-        <span class="ig" data-act="tip" data-tip="Estrategia en 2 capas (auditoria 2026): NUCLEO que monta la tendencia (comprado sobre la media de 200 dias, en efectivo debajo — BTC 45% + ETH 25%) + capa TACTICA solo-largos con senales votadas, stops y objetivos, riesgo max 6%. Los shorts automaticos se eliminaron: perdian dinero historicamente. No usa dinero real.">ⓘ</span></div>
-      ${coreHtml}
-      ${posHtml}
-      ${pendHtml?`<div class="trList"><div class="trListLbl">ARMED ORDERS · open if price touches the trigger</div>${pendHtml}</div>`:''}
+      ${cloud?`<div class="ensMeta" style="margin-top:6px;color:#69f0ae">☁️ <b>Running 24/7 in the cloud</b> — works even with all your devices off · last cloud run ${Math.round((Date.now()-st.cloudRunAt)/60000)} min ago <span class="ig" data-act="tip" data-tip="El bot corre en los servidores de GitHub (gratis): cada hora revisa precios y, una vez al día justo después del cierre diario mundial, hace su revisión y opera. Tu Mac y tu iPhone solo muestran lo que hace.">ⓘ</span></div>`:''}
+      <div class="ensMeta" style="margin-top:6px">${scan?`Last daily review: <b>${scan.date}</b> · bought <b>${(scan.opened||[]).length}</b> · sold <b>${(scan.closed||[]).length}</b> · Market filter: ${filterTxt}`:'No daily review yet — the first one runs right after the next daily close.'}
+        <br>Next review: <b>${nrTxt}</b> <small style="color:#5f6b5f">(automatic, once a day after the world daily close)</small>
+        <span class="ig" data-act="tip" data-tip="Bot v4: dos estrategias de REGLAS FIJAS sobre 17 monedas grandes. Una vez al día, al cierre diario: (1) ROTACIÓN — se queda con las monedas más fuertes del momento, solo cuando el mercado general está sano; (2) TENDENCIA — compra cada moneda cuando arranca una tendencia alcista y la vende cuando se debilita. Apuesta menos dinero en las monedas más volátiles. Solo compra (no hace shorts). No usa dinero real.">ⓘ</span></div>
+      ${posHtml?`<div class="trList"><div class="trListLbl">OPEN POSITIONS · ${botPos.length} · tap one for details</div>${posHtml}</div>`:`<div class="paperEmpty">${scan?'No open positions right now — the bot is in cash, waiting for its rules to give a buy.':'Fresh account: $100,000 in cash. The first trades appear after the next daily review.'}</div>`}
+      ${manHtml}
+      <div class="ensBd"><div class="ensBdTitle">The two strategies — record so far <span class="ig" data-act="tip" data-tip="Ganados/total y dinero ganado o perdido por cada estrategia. Lo normal es ganar más o menos 1 de cada 3 trades: muchas pérdidas pequeñas y pocas ganancias grandes que pagan todo. Las reglas NO se cambian por una mala racha — así fue como se validaron.">ⓘ</span></div>
+        <div class="ensBdRows">${sleeveHtml}</div>
+      </div>
       ${newsHtml}
-      <div class="ensBd"><div class="ensBdTitle">Setups — which trade types are working <span class="ig" data-act="tip" data-tip="Ganados/total por tipo de entrada. Si un setup pierde en promedio tras 8 trades se le recorta el tamano a la mitad; tras 12, se desactiva solo.">ⓘ</span></div>
-        <div class="ensBdRows">${setupHtml}</div>
-      </div>
-      ${st.weightsR?`<div class="ensBd"><div class="ensBdTitle">What it has learned — weight per signal <span class="ig" data-act="tip" data-tip="Cada senal gana peso cuando acierta y pierde peso cuando falla, con memoria reciente: lo de este mes pesa mas que lo del ano pasado. Los pesos exactos solo se ven en tus dispositivos — no se publican.">ⓘ</span></div>
-        <div class="ensBdRows">${wRows}</div>`:`<div class="ensBd"><div class="ensBdTitle">🧠 The learned weights live in the private brain <span class="ig" data-act="tip" data-tip="Para proteger tu estrategia, los pesos aprendidos no se publican — solo el cerebro privado en la nube los conoce.">ⓘ</span></div>`}
-        ${st.pretrain?`<div class="ensBdNote">Pre-trained on ${st.pretrain.days} days of history (signal hit-rate ${st.pretrain.hitRate}%). Bot instance created <b>${new Date(st.createdAt||Date.now()).toLocaleDateString(undefined,{month:'short',day:'numeric'})}</b> — if this date looks new, this device is running a fresh bot (use 📥 Restore with a backup to bring your trained one).</div>`:''}
-        ${studyHtml}
-      </div>
       ${activity?`<div class="trList"><div class="trListLbl">ACTIVITY · everything the bot did, with P&amp;L</div><div style="max-height:240px;overflow-y:auto">${activity}</div></div>`:''}
-      ${lessons?`<div class="trList"><div class="trListLbl">RECENT LESSONS</div>${lessons}</div>`:''}
       ${changeLog&&changeLog.entries?`<div class="trList"><div class="trListLbl" data-act="tg" data-id="whatsnew" style="cursor:pointer">📋 WHAT'S NEW · qué cambió en cada versión ▾</div>
         <div id="whatsnew" class="trDet" style="display:none;max-height:320px;overflow-y:auto">
         ${changeLog.entries.slice(0,8).map(e=>`<div style="padding:7px 0;border-bottom:1px dashed #1f2937">
           <div style="font-size:11.5px"><b style="color:#7fb2e0">v${e.v}</b> <small style="color:#7d827d">· ${e.fecha}</small> · <b>${e.titulo}</b></div>
           ${(e.cambios||[]).map(c=>`<div class="trd" style="padding:2px 0"><span style="color:#9aa09a;line-height:1.4">· ${c}</span></div>`).join('')}
         </div>`).join('')}</div></div>`:''}
-      ${jrows?`<div class="trList"><div class="trListLbl">BOT JOURNAL · ${tr.length} closed · ${winRate!=null?winRate+'% wins':''} · realized ${money(realized)}</div><div style="${botJournalAll?'max-height:360px;overflow-y:auto':''}">${jrows}</div>${tr.length>12?`<button class="bigBtn" style="width:100%;margin-top:7px" data-act="botjournal">${botJournalAll?'Show recent only':'Show ALL '+tr.length+' trades'}</button>`:''}</div>`:`<div class="paperEmpty">No closed trades yet — the journal fills in as the bot's calls play out.</div>`}
-      <div class="paperBtns" style="margin-bottom:2px"><button class="logBtn" data-act="botbuy" style="flex:1;background:#00c853;color:#04140b">🟢 Buy (long)</button><button class="logBtn" data-act="botsell" style="flex:1;background:#ff1744;color:#fff">🔴 Sell (short)</button></div>
-      <div class="paperNote" style="margin-top:0;padding-top:0;border:none">You can place your own paper trade — the bot checks it against its analysis first and warns you if you’re going against it.</div>
-      <div class="paperBtns" style="flex-wrap:wrap">${botCloudFresh(st)?'':`<button class="logBtn" data-act="botdeposit">💵 Add funds</button><button class="logBtn ghost" data-act="botwithdraw">Withdraw</button>`}<button class="logBtn ghost" data-act="botbackup">🗂 Backup</button><button class="logBtn ghost" data-act="botrestore">📥 Restore</button><button class="logBtn ghost" data-act="botexport">⬇ CSV</button>${botCloudFresh(st)?'':`<button class="logBtn ghost" data-act="botreset">Reset</button>`}</div>
-      <div class="paperNote">Paper trading only — it never places real orders. BTC + ETH; entries from the morning scan plus armed dip/breakout orders filled hourly. Per trade: stop 1.6×ATR, 50% off at T1, breakeven + 2×ATR trail to the final target (3.2×ATR), max 10 days, ~0.2% fee, risk ~1–2% of equity each, total open risk capped at ${BOT_RISK_BUDGET}%.</div>
+      ${jrows?`<div class="trList"><div class="trListLbl">BOT JOURNAL · ${closedN} closed${winRate!=null?' · '+winRate+'% won':''} · realized ${money(realized)}</div><div style="${botJournalAll?'max-height:360px;overflow-y:auto':''}">${jrows}</div>${all.length>12?`<button class="bigBtn" style="width:100%;margin-top:7px" data-act="botjournal">${botJournalAll?'Show recent only':'Show ALL '+all.length+' trades'}</button>`:''}</div>`:`<div class="paperEmpty">No closed trades yet — every sale will be listed here with its profit or loss.</div>`}
+      ${brain?`<div class="paperBtns" style="margin-bottom:2px"><button class="logBtn" data-act="botbuy" style="flex:1;background:#00c853;color:#04140b">🟢 Buy (long)</button><button class="logBtn" data-act="botsell" style="flex:1;background:#ff1744;color:#fff">🔴 Sell (short)</button></div>
+      <div class="paperNote" style="margin-top:0;padding-top:0;border:none">Your own paper trade on ${asset} — the bot tells you first whether it agrees. Manual trades are kept apart from the bot's record.</div>`:''}
+      <div class="paperBtns" style="flex-wrap:wrap">${cloud?'':`<button class="logBtn" data-act="botdeposit">💵 Add funds</button><button class="logBtn ghost" data-act="botwithdraw">Withdraw</button>`}<button class="logBtn ghost" data-act="botbackup">🗂 Backup</button>${cloud?'':`<button class="logBtn ghost" data-act="botrestore">📥 Restore</button>`}<button class="logBtn ghost" data-act="botexport">⬇ CSV</button>${cloud?'':`<button class="logBtn ghost" data-act="botreset">Reset</button>`}</div>
+      <div class="paperNote">Paper trading only — it never places real orders. Fixed rules, tested on 5 years of history without peeking at the future: about 1 trade in 3 wins, and the winners are much bigger than the losers. Losing weeks and months are normal; in that test the account fell 25–35% from its peak at the worst moments before recovering. Costs of ~0.2% per round trip are included.</div>
     </div>`;
 }
 
@@ -318,27 +285,16 @@ function renderBot(curPrice){
 function botStrip(livePx){
   if(!botState)return '';
   const st=botState;
-  const startEq=st.startEquity||10000;
-  const realized=st.equity-startEq-(st.netDeposits||0);
-  let unreal=0;
-  Object.entries(st.cores||{}).forEach(([sym,co])=>{if(co&&co.active){
-    const ref=(livePx&&livePx[sym]!=null?livePx[sym]:(st.lastPx&&st.lastPx[sym]))||co.entry;
-    unreal+=st.equity*((ref-co.entry)/co.entry)*(co.sizePct/100);}});
-  (st.positions||[]).forEach(o=>{
-    // use the live price for the asset on screen (same as the card); stored price otherwise
-    const ref=(livePx&&livePx[o.sym]!=null?livePx[o.sym]:(st.lastPx&&st.lastPx[o.sym]))||o.entry;
-    const leg=p=>(o.dir===1?(p-o.entry)/o.entry:(o.entry-p)/o.entry)*100;
-    const pct=o.scaled?0.5*leg(o.t1)+0.5*leg(ref):leg(ref);
-    unreal+=st.equity*(pct/100)*(o.sizePct/100);});
-  const tot=realized+unreal;
+  const m=botMtm(st,s=>(livePx&&livePx[s]!=null)?livePx[s]:null);
+  const tot=m.equity-(st.startEquity||100000)-(st.netDeposits||0);
   const col=tot>0.005?'#00e676':tot<-0.005?'#ff1744':'#ffb300';
   const money=v=>(v<0?'−$':'+$')+Math.abs(v).toLocaleString('en-US',{maximumFractionDigits:Math.abs(v)<100?2:0});
-  const nCores=Object.values(st.cores||{}).filter(c=>c&&c.active).length;
-  const n=(st.positions||[]).length+nCores, pend=(st.pending||[]).length;
+  const bp=(st.positions||[]).filter(p=>p.setup!=='manual');
+  const syms=Array.from(new Set(bp.map(p=>p.sym)));
   return `<div class="regime" style="border-color:#2a5d8e;background:linear-gradient(180deg,rgba(41,121,255,.08),rgba(41,121,255,.02))">
     <div class="regDot" style="background:${col}"></div>
-    <div style="flex:1"><div class="regT" style="color:#7fb2e0">🤖 BOT · P&amp;L <span style="color:${col}">${money(tot)}</span> · ${n} open · ${pend} armed</div>
-    <div class="regN">${(st.positions||[]).map(p=>p.sym+(p.dir===1?' ▲':' ▼')+p.sizePct+'%').join(' · ')||'no open trades'} · next scan ${botNextRun(new Date()).toLocaleTimeString([],{hour:'2-digit',minute:'2-digit'})}</div></div></div>`;
+    <div style="flex:1"><div class="regT" style="color:#7fb2e0">🤖 BOT · P&amp;L <span style="color:${col}">${money(tot)}</span> · ${bp.length} open</div>
+    <div class="regN">${syms.length?syms.slice(0,9).join(' · ')+(syms.length>9?' …':''):'in cash — waiting for a buy'} · next review ${botNextRun(new Date()).toLocaleTimeString([],{hour:'2-digit',minute:'2-digit'})}</div></div></div>`;
 }
 
 /* ============================ RENDER ============================ */
@@ -584,13 +540,13 @@ document.addEventListener("click",async e=>{
       try{Object.keys(localStorage).filter(k=>k.indexOf("ptState_")===0).forEach(k=>localStorage.removeItem(k));}catch(err){}
       if(store[sel])render(); break;}
     case "botrun": {if(botBusy)break;botBusy=true;if(store[sel])render();
-      try{const r=await botRunMorning({force:true});botState=r.state||await botLoad();botSetBadge(botState);}catch(err){}
+      try{const r=await botCheckExits();botState=(r&&r.state)||await botLoad();botSetBadge(botState);}catch(err){}
       botBusy=false;if(store[sel])render(); break;}
     case "botexport": {if(!botState||!botState.trades.length)break;
-      const dol=t=>{if(t.usd!=null)return t.usd;const r=(t.ret/100)*(t.sizePct/100);return r<=-1?0:+(t.eqAfter*r/(1+r)).toFixed(2);};
-      downloadCSV([["opened","closed","asset","setup","direction","size_pct","entry","exit","return_pct","pnl_usd","exit_reason","equity_after"]]
+      const day=t=>t?new Date(t).toISOString().slice(0,10):"";
+      downloadCSV([["opened","closed","asset","strategy","direction","amount_usd","entry","exit","return_pct","pnl_usd","exit_reason","account_after"]]
         .concat(botState.trades.map(t=>
-          [t.date,new Date(t.exitT).toISOString().slice(0,10),t.sym||"BTC",t.setup||"morning",t.dir===1?"LONG":"SHORT",t.sizePct,t.entry,t.exit,t.ret,dol(t),t.reason,t.eqAfter])),"morning-bot-journal.csv"); break;}
+          [day(t.entryT),day(t.exitT),t.sym,t.setup,t.dir===-1?"SHORT":"LONG",t.cost!=null?t.cost:"",t.entry,t.exit,t.ret,t.usd,t.reason,t.localManual?"":t.eqAfter])),"btc-pro-bot-journal.csv"); break;}
     case "botjournal": {botJournalAll=!botJournalAll;if(store[sel])render();break;}
     case "botdeposit": {if(!botState)break;
       const v=parseFloat(prompt("Amount to ADD to the paper account (USD):","5000"));
@@ -622,110 +578,73 @@ document.addEventListener("click",async e=>{
       inp.onchange=async()=>{const f=inp.files&&inp.files[0];if(!f)return;
         try{
           const obj=JSON.parse(await f.text());
-          if(!obj||obj.startEquity==null||(!obj.weightsR&&!obj.weights))throw 0;
+          if(!obj||obj.startEquity==null||!(obj.version>=4))throw 0;
           if(typeof confirm==="function"&&!confirm("Replace the bot's current data with this backup?"))return;
           await botSave(botMigrate(obj));botState=await botLoad();botSetBadge(botState);if(store[sel])render();
           alert("Backup restored ✓");
-        }catch(e){alert("That file doesn't look like a valid BTC Pro backup.");}};
+        }catch(e){alert("That file is not a BTC Pro v4 backup (older backups belong to the previous bot and can't be loaded).");}};
       inp.click();break;}
-    case "botreset": {if(typeof confirm==="function"&&!confirm("Reset the bot? This erases its paper record and re-learns from history."))break;
-      botBusy=true;if(store[sel])render();
-      try{await botSave(botDefaultState());botState=await botPretrain();botSetBadge(botState);}catch(err){botState=await botLoad();}
-      botBusy=false;if(store[sel])render(); break;}
-    case "botclosecore": {
-      if(!botState)break;
-      const csym=el.dataset.sym;
-      const co=botState.cores&&botState.cores[csym];
-      if(!co||!co.active)break;
-      const cpx=(csym===asset&&store[1])?store[1].c[store[1].c.length-1]:((botState.lastPx&&botState.lastPx[csym])||co.entry);
-      const cpct=(cpx-co.entry)/co.entry*100;
-      const cusd=botState.equity*(cpct/100)*(co.sizePct/100);
-      const cm=csym+' TREND CORE at $'+Math.round(cpx).toLocaleString('en-US')+
-        '\n\nClosing now locks in '+(cusd>=0?'+$':'−$')+Math.abs(cusd).toLocaleString('en-US',{maximumFractionDigits:2})+' ('+(cpct>=0?'+':'')+cpct.toFixed(1)+'%).'+
-        '\n\n⚠️ WARNING: price is still ABOVE the 200-day average — the core strategy (the audit’s best performer) would stay IN. It re-arms only after price dips below the 200-day once.'+
-        '\n\nThis is PAPER trading. Close the core now?';
-      if(typeof confirm==='function'&&!confirm(cm))break;
-      await botQueue(async()=>{const stf=await botLoad();
-        const c2=stf.cores&&stf.cores[csym];
-        if(c2&&c2.active){botCoreClose(stf,csym,cpx,Date.now(),'closed by you');c2.muted=true;}
-        await botSave(stf);botState=stf;botSetBadge(stf);});
+    case "botreset": {if(typeof confirm==="function"&&!confirm("Reset the bot? This erases its paper record and starts again with $100,000."))break;
+      await botQueue(async()=>{await botSave(botDefaultState());});
+      botState=await botLoad();botSetBadge(botState);
       if(store[sel])render(); break;}
     case "botclose": {
       if(!botState)break;
       const id=+el.dataset.id;
       const pos=(botState.positions||[]).find(p=>p.id===id);
       if(!pos)break;
+      const isMan=pos.setup==='manual';
+      if(!isMan&&botCloudFresh(botState)){
+        alert("Esta posición la gestiona el bot de la nube (24/7) y se cierra sola por sus reglas. Solo tus trades manuales se cierran desde aquí.");break;}
       // best available live price for this position's asset
       const px=(pos.sym===asset&&store[1])?store[1].c[store[1].c.length-1]:((botState.lastPx&&botState.lastPx[pos.sym])||pos.entry);
-      const leg=(pos.dir===1?(px-pos.entry)/pos.entry:(pos.entry-px)/pos.entry)*100;
-      const pnlPct=pos.scaled?0.5*((pos.dir===1?(pos.t1-pos.entry)/pos.entry:(pos.entry-pos.t1)/pos.entry)*100)+0.5*leg:leg;
-      const usd=botState.equity*(pnlPct/100)*(pos.sizePct/100);
-      // second opinion: what does the bot think about this symbol right now?
-      let botAction='FLAT',botScore=null;
-      if(pos.sym===asset&&store[1]){const v=botView(store[1],botState,botState.news);if(v){botAction=v.action;botScore=v.score;}}
-      else if(botState.lastScan&&botState.lastScan.byAsset&&botState.lastScan.byAsset[pos.sym]){
-        const a=botState.lastScan.byAsset[pos.sym];botAction=a.action;botScore=a.score;}
-      const sameAsPos=(pos.dir===1&&botAction==='LONG')||(pos.dir===-1&&botAction==='SHORT');
-      const oppToPos=(pos.dir===1&&botAction==='SHORT')||(pos.dir===-1&&botAction==='LONG');
+      const pl=botPosPnl(botState,pos,px);
       let verdict;
-      if(botAction==='FLAT')verdict='➖ The bot is NEUTRAL on '+pos.sym+' now — no strong view either way.';
-      else if(sameAsPos)verdict='⚠️ WARNING: the bot is still leaning '+botAction+' (score '+botScore+') — it would KEEP this trade open. Closing now goes AGAINST its analysis.';
-      else if(oppToPos)verdict='✅ The bot has turned '+botAction+' (score '+botScore+') — closing is IN LINE with its current view.';
-      else verdict='➖ The bot has no strong view here right now.';
-      const protNote=pos.scaled?'\n🛡️ This trade is already protected — stop at breakeven + trailing. You can let it run with no risk of a loss.':'';
-      const m=pos.sym+' '+(pos.dir===1?'LONG':'SHORT')+' at $'+Math.round(px).toLocaleString('en-US')+
-        '\n\nClosing now locks in '+(usd>=0?'+$':'−$')+Math.abs(usd).toLocaleString('en-US',{maximumFractionDigits:2})+
-        ' ('+(pnlPct>=0?'+':'')+pnlPct.toFixed(1)+'%).'+
-        '\n\n'+verdict+protNote+
+      if(!isMan)verdict='⚠️ WARNING: the bot’s rules would KEEP this trade open today. Closing it now goes AGAINST its plan.';
+      else{
+        // second opinion: what does the bot think about this symbol right now?
+        const v=(pos.sym===asset&&store[1])?botView(store[1],botState):null;
+        const act=v?v.action:'FLAT';
+        const same=(pos.dir===1&&act==='LONG')||(pos.dir===-1&&act==='SHORT');
+        const opp=(pos.dir===1&&act==='SHORT')||(pos.dir===-1&&act==='LONG');
+        verdict=same?'⚠️ WARNING: the bot still sees '+pos.sym+' trending '+(act==='LONG'?'UP':'DOWN')+' — it would KEEP this trade open. Closing now goes AGAINST its read.'
+          :opp?'✅ The bot now sees '+pos.sym+' trending '+(act==='LONG'?'UP':'DOWN')+' — closing is IN LINE with its read.'
+          :'➖ The bot has no clear read on '+pos.sym+' right now.';
+        if(pos.scaled)verdict+='\n🛡️ This trade is already protected — stop at breakeven + trailing.';
+      }
+      const m=pos.sym+' '+(pos.dir===1?'LONG':'SHORT')+' at '+botPx(px)+
+        '\n\nClosing now locks in '+(pl.usd>=0?'+$':'−$')+Math.abs(pl.usd).toLocaleString('en-US',{maximumFractionDigits:2})+
+        ' ('+(pl.pct>=0?'+':'')+pl.pct.toFixed(1)+'%).'+
+        '\n\n'+verdict+
         '\n\nThis is PAPER trading. Close this trade now?';
-      if(botCloudFresh(botState)&&pos.setup!=='manual'){
-        alert("Esta posición la gestiona el bot de la nube (24/7) con su stop, objetivo y trailing — se cierra sola por sus reglas. Solo tus trades manuales se cierran desde aquí.");break;}
       if(typeof confirm==='function'&&!confirm(m))break;
       await botQueue(async()=>{const stf=await botLoad();
         const p=(stf.positions||[]).find(q=>q.id===id);
-        if(!p){}
-        else if(botCloudFresh(stf)&&p.setup==='manual'){
-          /* cloud mode: manual trades settle in the device-local ledger, not cloud equity */
-          const leg2=(p.dir===1?(px-p.entry)/p.entry:(p.entry-px)/p.entry)*100-0.2;
-          const usd2=+(stf.equity*(leg2/100)*(p.sizePct/100)).toFixed(2);
-          stf.manualPnl=+((stf.manualPnl||0)+usd2).toFixed(2);
-          stf.trades.push({sym:p.sym,setup:'manual',localManual:true,dir:p.dir,entry:p.entry,exit:+px.toFixed(2),
-            entryT:p.entryT,exitT:Date.now(),ret:+leg2.toFixed(2),sizePct:p.sizePct,reason:'manual',
-            date:p.date,votes:p.votes,atrPct:p.atrPct,scaled:!!p.scaled,usd:usd2,eqAfter:stf.equity});
-          stf.trades=stf.trades.slice(-400);
-          botLog(stf,leg2>0?'win':'loss',p.sym+' MANUAL '+(p.dir===1?'LONG':'SHORT')+' closed by you: '+(usd2>=0?'+$':'−$')+Math.abs(usd2).toFixed(2)+' ('+(leg2>=0?'+':'')+leg2.toFixed(1)+'%)');
-          stf.positions=stf.positions.filter(q=>q.id!==id);
-        }else{
-          botCloseTrade(stf,p,px,Date.now(),'manual');
-        }
+        if(p)botCloseTrade(stf,p,px,Date.now(),'manual');
         await botSave(stf);botState=stf;botSetBadge(stf);});
       if(store[sel])render(); break;}
     case "botbuy": case "botsell": {
       if(!botState||!store[1])break;
       const dir=el.dataset.act==='botbuy'?1:-1, price=store[1].c[store[1].c.length-1];
-      const view=botView(store[1],botState,botState.news);
+      const view=botView(store[1],botState);
       if(!view){alert("Not enough data to open a trade yet.");break;}
-      // size preview (matches botOpenManual)
-      const sd=(botState.params||{stopATR:1.6}).stopATR*Math.max(view.atrPct,0.5);
-      const sizePct=Math.round(Math.max(5,Math.min(100,1.5/sd*100)));
-      const usedR=botUsedRisk(botState);
+      const plan=botManualPlan(price,view.atrPct,dir);
       const aligned=(dir===1&&view.action==='LONG')||(dir===-1&&view.action==='SHORT');
       const against=(dir===1&&view.action==='SHORT')||(dir===-1&&view.action==='LONG');
       const fights=view.nearTrend!==0&&view.nearTrend!==dir;
       const yourMove=dir===1?'BUY (go LONG — bet it goes UP)':'SELL (go SHORT — bet it goes DOWN)';
-      const botSays=view.action==='FLAT'?'NEUTRAL (no clear edge)':view.action+' (score '+view.score+')';
+      const botSays=view.action==='FLAT'?'NO CLEAR TREND':(view.action==='LONG'?'UPTREND':'DOWNTREND');
       let verdict;
-      if(view.action==='FLAT') verdict='➖ The bot is NEUTRAL right now — it sees no clear edge either way.';
-      else if(aligned) verdict='✅ This AGREES with the bot — you’re on the same side.';
-      else if(against) verdict='⚠️ WARNING: this goes AGAINST the bot. It is leaning '+view.action+' right now.';
+      if(view.action==='FLAT') verdict='➖ The bot sees no clear trend on '+asset+' right now — no edge either way.';
+      else if(aligned) verdict='✅ This AGREES with the bot — you’re on the same side as the trend it sees.';
+      else if(against) verdict='⚠️ WARNING: this goes AGAINST the bot. It sees '+asset+' in a'+(view.action==='LONG'?'n UPTREND':' DOWNTREND')+' right now.';
       else verdict='➖ The bot has no strong opinion on this direction.';
-      const trendNote=fights?'\n⚠️ It also fights the recent '+(view.nearTrend>0?'UP':'DOWN')+'trend of the last 2 weeks.':'';
-      const atrAbs=price*view.atrPct/100, st=price-dir*1.6*atrAbs, tg=price+dir*3.2*atrAbs;
-      const msg=asset+' — '+yourMove+' at $'+Math.round(price).toLocaleString('en-US')+
+      const trendNote=fights?'\n⚠️ It also fights the '+(view.nearTrend>0?'UP':'DOWN')+' move of the last 2 weeks.':'';
+      const msg=asset+' — '+yourMove+' at '+botPx(price)+
         '\n\nThe bot says: '+botSays+'\n'+verdict+trendNote+
-        '\n\nPlan (paper): size '+sizePct+'% of capital · stop $'+Math.round(st).toLocaleString('en-US')+
-        ' · target $'+Math.round(tg).toLocaleString('en-US')+' · risk ~1.5% of capital.'+
-        '\nOpen risk in use: '+usedR.toFixed(1)+'% of 6% budget.'+
+        '\n\nPlan (paper): size '+plan.sizePct+'% of the account · stop '+botPx(plan.stop)+
+        ' · target '+botPx(plan.t2)+' · risk ~1.5% of the account.'+
+        '\nManual trades are tracked apart from the bot’s own record.'+
         '\n\nThis is PAPER trading — no real money. Open this trade?';
       if(typeof confirm==='function'&&!confirm(msg))break;
       await botQueue(async()=>{const stf=await botLoad();
@@ -748,13 +667,10 @@ async function _go(){
     sentiment=await fetchSentiment(30);
     if(!minerCost||Date.now()-minerCost.at>6*3600000){try{const mc=await fetchMinerCost();if(mc)minerCost=mc;}catch(e){}}
     if(!changeLog){try{const r=await fetch('https://jlsv305-droid.github.io/btc-pro/changelog.json',{cache:'no-store'});if(r.ok)changeLog=await r.json();}catch(e){}}
-    if(!botState)botState=await botEnsureReady();           // first ever open: pre-trains on history
-    try{const cs=await botSyncCloud();if(cs)botState=cs;}catch(e){} // adopt the 24/7 cloud brain when reachable
-    if(!botCloudFresh(botState)&&botNeedsRun(botState)){    // local catch-up only if the cloud isn't running
+    if(!botState)botState=await botEnsureReady();
+    try{const cs=await botSyncCloud();if(cs)botState=cs;}catch(e){} // mirror the 24/7 cloud bot when reachable
+    if(!botCloudFresh(botState)&&botNeedsRun(botState)){    // local daily review only if the cloud has gone silent
       try{const r=await botRunMorning({});if(r.state)botState=r.state;}catch(e){}
-    }
-    if(!botCloudFresh(botState)&&botState&&botState.open){  // local exit-watch only without cloud
-      try{const r=await botCheckExits();if(r.state)botState=r.state;}catch(e){}
     }
     botSetBadge(botState);
     $("#refresh").classList.remove("spin");
