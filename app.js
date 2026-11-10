@@ -200,7 +200,7 @@ function renderBot(curPrice){
         <div><span>Riding since</span><b>${x.co.date||'—'}</b></div>
         <div><span>Entry</span><b>${fmt(x.co.entry)}</b></div>
       </div>
-      <div class="posNote">Rides the whole trend: stays in while price closes above the 200-day average, goes to CASH when it closes below. No target, no time limit — the audit's strongest strategy (won in all 4 test windows, both bull and bear).</div>
+      <div class="posNote">Rides the whole trend: stays in while price closes above the 200-day average, goes to CASH when it closes below. No target, no time limit. Corrected backtest: about +22% per window vs +30% for buy-and-hold — it earns less in bull markets but loses much less in bear markets.</div>
       <button class="logBtn ghost" data-act="botclosecore" data-sym="${x.sym}" style="width:100%;margin-top:9px">✕ Close core now</button>
     </div>`;}).join('');
 
